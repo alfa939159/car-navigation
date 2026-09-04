@@ -661,6 +661,16 @@
     for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return new TextDecoder().decode(bytes);
   }
+  // このアプリはRealtime Databaseしか使わないため、Storage/Messaging/Analytics用の
+  // 項目(storageBucket, messagingSenderId, appId)はQRコードには含めない(読み取りやすさのため)。
+  // キー名を含むJSONではなく "|" 区切りの値だけにすることで、QRコードに埋め込むデータ量を減らす。
+  function packFbConfig(cfg){
+    return [cfg.apiKey || '', cfg.authDomain || '', cfg.databaseURL || '', cfg.projectId || ''].join('|');
+  }
+  function unpackFbConfig(packed){
+    const parts = packed.split('|');
+    return { apiKey: parts[0] || '', authDomain: parts[1] || '', databaseURL: parts[2] || '', projectId: parts[3] || '' };
+  }
   function memberColor(id){
     let h = 0;
     for(let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
@@ -721,7 +731,7 @@
     const url = new URL(window.location.href);
     url.search = '';
     url.hash = '';
-    url.searchParams.set('fbconfig', b64EncodeUtf8(JSON.stringify(cfg)));
+    url.searchParams.set('fbconfig', b64EncodeUtf8(packFbConfig(cfg)));
     return url.toString();
   }
   function renderConfigTransferQr(){
@@ -730,9 +740,13 @@
     const transferUrl = buildConfigTransferUrl(cfg);
     configTransferQr.innerHTML = '';
     if(typeof QRCode !== 'undefined'){
+      // 誤り訂正レベルを最低(L)にして、QRコードの升目をできるだけ粗くする。
+      // これによりiPhone等のカメラでも実物のQRコードを読み取りやすくなる
+      // (誤り訂正を強めるほど同じデータでも升目が細かく密になり、読み取りにくくなるため)。
       new QRCode(configTransferQr, {
-        text: transferUrl, width: 200, height: 200,
-        colorDark: '#0b1220', colorLight: '#ffffff'
+        text: transferUrl, width: 240, height: 240,
+        colorDark: '#0b1220', colorLight: '#ffffff',
+        correctLevel: (typeof QRCode.CorrectLevel !== 'undefined') ? QRCode.CorrectLevel.L : undefined
       });
     }
     copyConfigTransferBtn.onclick = () => {
@@ -756,8 +770,8 @@
     const raw = new URLSearchParams(window.location.search).get('fbconfig');
     if(!raw) return;
     try{
-      const cfg = JSON.parse(b64DecodeUtf8(raw));
-      if(!cfg || typeof cfg !== 'object') throw new Error('invalid config');
+      const cfg = unpackFbConfig(b64DecodeUtf8(raw));
+      if(!cfg || !cfg.databaseURL) throw new Error('invalid config');
       saveFirebaseConfigToStorage(cfg);
       const url = new URL(window.location.href);
       url.searchParams.delete('fbconfig');
@@ -789,8 +803,9 @@
     inviteQr.innerHTML = '';
     if(typeof QRCode === 'undefined') return; // ライブラリが読み込めなかった場合は静かに諦める
     new QRCode(inviteQr, {
-      text: inviteUrl, width: 160, height: 160,
-      colorDark: '#0b1220', colorLight: '#ffffff'
+      text: inviteUrl, width: 200, height: 200,
+      colorDark: '#0b1220', colorLight: '#ffffff',
+      correctLevel: (typeof QRCode.CorrectLevel !== 'undefined') ? QRCode.CorrectLevel.L : undefined
     });
     copyInviteBtn.onclick = () => {
       if(navigator.clipboard && navigator.clipboard.writeText){
