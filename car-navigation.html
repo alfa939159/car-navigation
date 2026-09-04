@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>カーナビ</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  html, body { margin:0; padding:0; height:100%; width:100%; overflow:hidden; font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic", sans-serif; background:#0b1220; }
+  /* Several panels below set their own `display` (flex, etc.); without this,
+     that author rule would beat the browser's default [hidden]{display:none}
+     and the element would stay visible (and clickable) even while hidden. */
+  [hidden] { display:none !important; }
+  #app { position:fixed; inset:0; }
+
+  /* --- Map viewport: fixed-size window that clips an oversized, rotatable map --- */
+  #mapViewport { position:absolute; inset:0; overflow:hidden; background:#0b1220; }
+  #map {
+    position:absolute; top:50%; left:50%; width:170%; height:170%;
+    transform-origin:center center;
+    transform: translate(-50%, -50%) rotate(0deg);
+  }
+
+  /* --- Top search bar --- */
+  .panel {
+    position:absolute; left:12px; right:12px;
+    background:rgba(20,26,38,0.92); backdrop-filter: blur(6px);
+    border:1px solid rgba(255,255,255,0.08); border-radius:14px;
+    box-shadow:0 6px 18px rgba(0,0,0,0.35); color:#eef2f8;
+    z-index:500;
+  }
+  #searchBar { top:12px; padding:10px; display:flex; gap:8px; }
+  #destInput {
+    flex:1; min-width:0; border:none; outline:none; border-radius:10px;
+    padding:11px 12px; font-size:15px; background:#0f1622; color:#eef2f8;
+  }
+  #destInput::placeholder { color:#7c8798; }
+  #destInput:disabled { opacity:.55; }
+  #searchBtn {
+    border:none; border-radius:10px; padding:0 16px; font-size:15px; font-weight:600;
+    background:#2f80ff; color:#fff; cursor:pointer; white-space:nowrap;
+  }
+  #searchBtn:disabled { opacity:.5; cursor:default; }
+
+  /* --- Status line --- */
+  #statusLine {
+    position:absolute; top:66px; left:12px; right:12px; z-index:490;
+    text-align:center; font-size:13px; min-height:18px; padding:0 8px;
+    color:#cfe0ff; text-shadow:0 1px 3px rgba(0,0,0,0.6);
+  }
+  #statusLine.ok { color:#7CFFB2; }
+  #statusLine.err { color:#ff8f8f; }
+
+  /* --- Map controls (right edge, below the search bar + status line so they never overlap) --- */
+  #mapControls {
+    position:absolute; top:104px; right:12px; z-index:500;
+    display:flex; flex-direction:column; gap:8px; align-items:flex-end;
+  }
+  .ctrl-btn {
+    border:none; border-radius:12px; width:46px; height:46px; font-size:19px;
+    background:rgba(20,26,38,0.92); color:#eef2f8; cursor:pointer;
+    box-shadow:0 4px 12px rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.08);
+  }
+  #orientBtn { width:auto; padding:0 12px; font-size:13px; font-weight:600; white-space:nowrap; }
+
+  /* --- Bottom panel --- */
+  #bottomPanel { bottom:12px; padding:14px 16px; }
+  #destLabel { font-size:13px; color:#9fb3d9; margin-bottom:8px; line-height:1.4; }
+  .nav-stats { display:flex; gap:10px; margin-bottom:12px; }
+  .stat { flex:1; background:#0f1622; border-radius:10px; padding:8px 6px; text-align:center; }
+  .stat-value { display:block; font-size:19px; font-weight:700; color:#eef2f8; }
+  .stat-unit { display:block; font-size:11px; color:#8a97ab; margin-top:2px; }
+  .nav-buttons button {
+    width:100%; border:none; border-radius:10px; padding:13px; font-size:16px; font-weight:700;
+    cursor:pointer;
+  }
+  #startNavBtn { background:#2ecc71; color:#06210f; }
+  #startNavBtn:disabled { opacity:.5; cursor:default; }
+  #stopNavBtn { background:#e05555; color:#2a0a0a; }
+
+  /* --- Current-location marker (rotatable inner arrow, counter-rotated independently of the map) --- */
+  .nav-marker-wrap { display:flex; align-items:center; justify-content:center; }
+  .nav-arrow {
+    width:0; height:0;
+    border-left:10px solid transparent; border-right:10px solid transparent;
+    border-bottom:22px solid #2f80ff;
+    filter: drop-shadow(0 0 3px rgba(47,128,255,0.9));
+    transform: rotate(0deg);
+  }
+
+  .leaflet-control-attribution { display:none !important; }
+  #attrib {
+    position:absolute; left:8px; bottom:2px; z-index:480; font-size:10px; color:#5a6478;
+    background:rgba(11,18,32,0.55); padding:1px 6px; border-radius:6px;
+  }
+
+  /* --- Group button appended to the right-edge control stack --- */
+  #groupBtn { position:relative; }
+  .badge {
+    position:absolute; top:-4px; right:-4px; min-width:18px; height:18px; padding:0 4px;
+    border-radius:9px; background:#e05555; color:#fff; font-size:11px; font-weight:700;
+    display:flex; align-items:center; justify-content:center; line-height:1;
+  }
+
+  /* --- Slide-up group panel --- */
+  .slidePanel {
+    position:absolute; left:12px; right:12px; bottom:12px; max-height:60vh;
+    background:rgba(20,26,38,0.96); backdrop-filter: blur(6px);
+    border:1px solid rgba(255,255,255,0.08); border-radius:14px;
+    box-shadow:0 6px 18px rgba(0,0,0,0.35); color:#eef2f8; z-index:520;
+    display:flex; flex-direction:column; overflow:hidden;
+  }
+  .slidePanel-header {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:12px 14px; border-bottom:1px solid rgba(255,255,255,0.08); font-weight:700;
+  }
+  .slidePanel-header button { border:none; background:none; color:#9fb3d9; font-size:18px; cursor:pointer; }
+  .slidePanel-body { overflow-y:auto; padding:10px 14px; }
+
+  .group-join-row { display:flex; flex-direction:column; gap:8px; }
+  .group-join-row input {
+    border:none; border-radius:10px; padding:11px 12px; font-size:15px; background:#0f1622; color:#eef2f8;
+  }
+  .group-join-row button {
+    border:none; border-radius:10px; padding:12px; font-size:15px; font-weight:700;
+    background:#2f80ff; color:#fff; cursor:pointer;
+  }
+  .member-row { display:flex; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid rgba(255,255,255,0.06); }
+  .member-dot { width:12px; height:12px; border-radius:50%; flex-shrink:0; }
+  .member-name { flex:1; font-size:14px; }
+  .member-dist { font-size:12px; color:#8a97ab; }
+  #leaveGroupBtn { margin-top:10px; width:100%; border:none; border-radius:10px; padding:11px; font-size:14px; font-weight:700; background:#3a2530; color:#ff8f8f; cursor:pointer; }
+  #wakeLockNote { font-size:12px; color:#8a97ab; margin-top:10px; line-height:1.6; }
+
+  #inviteSection { margin-top:14px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.08); text-align:center; }
+  #inviteLabel { font-size:12px; color:#9fb3d9; margin-bottom:10px; line-height:1.5; }
+  #inviteQr { display:flex; justify-content:center; background:#fff; border-radius:10px; padding:10px; width:fit-content; margin:0 auto; }
+  #inviteFileWarning { font-size:12px; color:#f5c268; margin-top:10px; line-height:1.6; text-align:left; background:#3a2f18; border-radius:8px; padding:8px 10px; }
+  #copyInviteBtn {
+    margin-top:10px; width:100%; border:none; border-radius:10px; padding:11px; font-size:14px; font-weight:700;
+    background:#0f1622; color:#eef2f8; cursor:pointer;
+  }
+
+  .member-marker { width:30px; height:30px; border-radius:50%; border:2px solid #0b1220; display:flex; align-items:center; justify-content:center; font-size:13px; font-weight:800; color:#fff; box-shadow:0 2px 8px rgba(0,0,0,0.4); }
+
+  /* --- Firebase setup modal --- */
+  .modal-backdrop {
+    position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:900;
+    display:flex; align-items:center; justify-content:center; padding:16px;
+  }
+  .modal-box {
+    background:#141a26; border-radius:16px; padding:18px; max-width:420px; width:100%;
+    color:#eef2f8; box-shadow:0 12px 32px rgba(0,0,0,0.5); box-sizing:border-box;
+  }
+  .modal-box h2 { margin:0 0 8px; font-size:17px; }
+  .modal-box p { margin:0 0 10px; font-size:13px; color:#9fb3d9; line-height:1.6; }
+  .modal-box textarea {
+    width:100%; box-sizing:border-box; min-height:120px; border-radius:10px; border:none;
+    padding:10px; font-size:13px; font-family:monospace; background:#0f1622; color:#eef2f8; resize:vertical;
+  }
+  .modal-box button {
+    margin-top:10px; width:100%; border:none; border-radius:10px; padding:12px; font-size:15px; font-weight:700;
+    background:#2f80ff; color:#fff; cursor:pointer;
+  }
+  .modal-box .modal-skip { margin-top:8px; background:none; color:#8a97ab; font-weight:400; font-size:12px; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="mapViewport"><div id="map"></div></div>
+  <div id="attrib">&copy; OpenStreetMap contributors</div>
+
+  <div id="searchBar" class="panel">
+    <input id="destInput" type="text" placeholder="目的地を入力（住所・施設名など）" autocomplete="off">
+    <button id="searchBtn">🔍 検索</button>
+  </div>
+
+  <div id="statusLine"></div>
+
+  <div id="mapControls">
+    <button id="orientBtn" class="ctrl-btn">⬆ 進行方向</button>
+    <button id="recenterBtn" class="ctrl-btn" hidden title="現在地に戻る">🎯</button>
+    <button id="groupBtn" class="ctrl-btn" title="グループ">👥<span class="badge" id="memberCountBadge" hidden>0</span></button>
+  </div>
+
+  <div id="bottomPanel" class="panel" hidden>
+    <div id="destLabel"></div>
+    <div class="nav-stats">
+      <div class="stat"><span class="stat-value" id="distValue">--</span><span class="stat-unit">残り距離</span></div>
+      <div class="stat"><span class="stat-value" id="etaValue">--:--</span><span class="stat-unit">到着予定</span></div>
+      <div class="stat"><span class="stat-value" id="etaMinValue">--</span><span class="stat-unit">残り時間</span></div>
+    </div>
+    <div class="nav-buttons">
+      <button id="startNavBtn">🧭 ナビ開始</button>
+      <button id="stopNavBtn" hidden>⏹ ナビ終了</button>
+    </div>
+  </div>
+
+  <div id="groupPanel" class="slidePanel" hidden>
+    <div class="slidePanel-header"><span>👥 グループ</span><button id="closeGroupPanel">✕</button></div>
+    <div class="slidePanel-body">
+      <div id="groupJoinView" class="group-join-row">
+        <input id="roomCodeInput" type="text" placeholder="合言葉（グループコード）" autocomplete="off">
+        <input id="nameInput" type="text" placeholder="表示名" autocomplete="off">
+        <button id="joinGroupBtn">グループに参加</button>
+      </div>
+      <div id="groupMembersView" hidden>
+        <div id="roomCodeLabel" style="font-size:12px;color:#8a97ab;margin-bottom:8px;"></div>
+        <div id="memberList"></div>
+        <div id="inviteSection">
+          <div id="inviteLabel">📱 このQRコードを仲間に読み取ってもらうと、同じグループに参加できます</div>
+          <div id="inviteQr"></div>
+          <div id="inviteFileWarning" hidden>⚠️ このファイルをそのまま開いている状態(file://)では、他の端末からQRコードを開けません。招待には、このファイルをHTTPS上にホスティングしてから配ってください。</div>
+          <button id="copyInviteBtn">🔗 招待リンクをコピー</button>
+        </div>
+        <button id="leaveGroupBtn">⏹ アプリの利用を停止</button>
+        <div id="wakeLockNote">画面がスリープすると位置情報の更新が止まることがあります。共有中は画面を点けたままにしてください。他のアプリ（LINE通話など）に切り替えると、戻ってくるまで位置情報の更新が一時停止する場合があります。</div>
+      </div>
+    </div>
+  </div>
+
+  <div id="setupModal" class="modal-backdrop" hidden>
+    <div class="modal-box">
+      <h2>🔥 グループ機能の初期設定</h2>
+      <p>仲間との位置共有には無料のFirebaseプロジェクトが必要です。Firebaseコンソールで作成したWebアプリの設定(config)をここに貼り付けてください。一度設定すればこの端末では次回から不要です。</p>
+      <textarea id="fbConfigInput" placeholder='{"apiKey":"...","databaseURL":"https://xxxx.firebaseio.com", ...}'></textarea>
+      <button id="saveFbConfigBtn">保存して有効化</button>
+      <button id="skipFbConfigBtn" class="modal-skip">あとで設定する（ナビ機能のみ使う）</button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/7.4.0/turf.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-database-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script>
+(function(){
+  "use strict";
+
+  /* ---------------------------------------------------------
+     カーナビ（実車走行を想定した簡易ナビゲーション）
+     - Nominatim(OSM)で目的地をジオコーディング
+     - ブラウザのGeolocation API(GPS)で現在地を継続取得し、地図を自動追従
+     - OSRM(routing.openstreetmap.de の無料デモインスタンス)でルート検索
+     - Turf.js で現在地とルートの距離を計算し、ルートを外れたら自動的に再検索
+     - 残り距離・到着予定時刻をリアルタイム表示
+
+     注意: スマートフォンのブラウザでGPSを使うには、このファイルを
+     HTTPS(またはlocalhost)で配信する必要があります。file:// を直接開いた場合、
+     多くのモバイルブラウザではセキュリティ上の理由から位置情報が取得できません。
+     PC のデスクトップ版ブラウザでは file:// でも動作することがあります。
+  --------------------------------------------------------- */
+
+  const ROUTE_BASE_CAR = "https://routing.openstreetmap.de/routed-car/route/v1/driving/";
+  const OFF_ROUTE_THRESHOLD_M = 40;      // これ以上ルートから離れたら「ルート外れ」候補とみなす
+  const OFF_ROUTE_CONFIRM_COUNT = 2;     // GPSのブレによる誤検知を避けるため、連続で規定回数外れたら再検索
+  const REROUTE_COOLDOWN_MS = 8000;      // 再検索の連続実行を防ぐクールダウン
+  const FALLBACK_SPEED_KMH = 30;         // GPSから速度が取得できない場合の目安速度
+  const ARRIVAL_THRESHOLD_KM = 0.03;     // 残り30m未満で到着とみなす
+  const DEFAULT_CENTER = [35.681236, 139.767125]; // 東京駅
+
+  const state = {
+    destLatLng: null,
+    destLabel: '',
+    destMarker: null,
+    routeLine: null,
+    routeLineOutline: null,
+    routeGeoJSON: null,
+    routeLengthKm: 0,
+    currentMarker: null,
+    accuracyCircle: null,
+    watchId: null,
+    navigating: false,
+    headingUp: true,
+    followMode: true,
+    offRouteStreak: 0,
+    rerouting: false,
+    lastRerouteAt: 0,
+    lastHeading: 0,
+  };
+
+  const mapEl = document.getElementById('map');
+  const map = L.map('map', { zoomControl: false, attributionControl: false }).setView(DEFAULT_CENTER, 15);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  const destInput = document.getElementById('destInput');
+  const searchBtn = document.getElementById('searchBtn');
+  const statusLine = document.getElementById('statusLine');
+  const bottomPanel = document.getElementById('bottomPanel');
+  const destLabel = document.getElementById('destLabel');
+  const startNavBtn = document.getElementById('startNavBtn');
+  const stopNavBtn = document.getElementById('stopNavBtn');
+  const distValue = document.getElementById('distValue');
+  const etaValue = document.getElementById('etaValue');
+  const etaMinValue = document.getElementById('etaMinValue');
+  const orientBtn = document.getElementById('orientBtn');
+  const recenterBtn = document.getElementById('recenterBtn');
+
+  function setStatus(msg, kind){
+    statusLine.textContent = msg || '';
+    statusLine.className = kind ? kind : '';
+  }
+
+  // ---------------- Geocoding (Nominatim) ----------------
+  async function geocode(query){
+    const url = 'https://nominatim.openstreetmap.org/search?format=json&limit=1&accept-language=ja&q=' + encodeURIComponent(query);
+    const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    if(!res.ok) throw new Error('ジオコーディングに失敗しました');
+    const data = await res.json();
+    if(!data || !data.length) throw new Error('「' + query + '」の場所が見つかりませんでした');
+    return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon), label: data[0].display_name };
+  }
+
+  searchBtn.addEventListener('click', handleSearch);
+  destInput.addEventListener('keydown', e => { if(e.key === 'Enter') handleSearch(); });
+
+  async function handleSearch(){
+    const q = destInput.value.trim();
+    if(!q){ setStatus('目的地を入力してください', 'err'); return; }
+    setStatus('目的地を検索しています…');
+    searchBtn.disabled = true;
+    try{
+      const g = await geocode(q);
+      state.destLatLng = { lat: g.lat, lng: g.lng };
+      state.destLabel = g.label;
+      if(state.destMarker) map.removeLayer(state.destMarker);
+      state.destMarker = L.marker([g.lat, g.lng], { title: g.label }).addTo(map);
+      map.setView([g.lat, g.lng], 15);
+      destLabel.textContent = '📍 ' + g.label;
+      bottomPanel.hidden = false;
+      startNavBtn.hidden = false;
+      startNavBtn.disabled = false;
+      stopNavBtn.hidden = true;
+      distValue.textContent = '--'; etaValue.textContent = '--:--'; etaMinValue.textContent = '--';
+      setStatus('目的地を設定しました。ナビを開始できます', 'ok');
+    }catch(err){
+      setStatus(err.message || '検索に失敗しました', 'err');
+    }finally{
+      searchBtn.disabled = false;
+    }
+  }
+
+  // ---------------- Route fetching / rendering ----------------
+  async function fetchRoute(fromLatLng, toLatLng){
+    const coordStr = `${fromLatLng.lng},${fromLatLng.lat};${toLatLng.lng},${toLatLng.lat}`;
+    const url = `${ROUTE_BASE_CAR}${coordStr}?overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    if(!res.ok) throw new Error('ルート検索サービスへの接続に失敗しました');
+    const data = await res.json();
+    if(data.code !== 'Ok' || !data.routes || !data.routes.length){
+      throw new Error('ルートが見つかりませんでした(陸路で到達できない可能性があります)');
+    }
+    return data.routes[0];
+  }
+
+  function renderRoute(route){
+    const latlngs = route.geometry.coordinates.map(c => [c[1], c[0]]);
+    if(state.routeLineOutline) map.removeLayer(state.routeLineOutline);
+    if(state.routeLine) map.removeLayer(state.routeLine);
+    state.routeLineOutline = L.polyline(latlngs, { color:'#0b1220', weight:9, opacity:.55, lineCap:'round', lineJoin:'round' }).addTo(map);
+    state.routeLine = L.polyline(latlngs, { color:'#2f80ff', weight:5, opacity:.95, lineCap:'round', lineJoin:'round' }).addTo(map);
+    state.routeGeoJSON = turf.lineString(route.geometry.coordinates);
+    state.routeLengthKm = turf.length(state.routeGeoJSON, { units: 'kilometers' });
+  }
+
+  // ---------------- Navigation lifecycle ----------------
+  startNavBtn.addEventListener('click', startNavigation);
+  stopNavBtn.addEventListener('click', () => stopNavigation('ナビを終了しました'));
+
+  function geoErrorMessage(err){
+    switch(err.code){
+      case err.PERMISSION_DENIED: return '位置情報の利用が許可されていません。ブラウザの設定をご確認ください';
+      case err.POSITION_UNAVAILABLE: return '現在地を取得できませんでした';
+      case err.TIMEOUT: return '現在地の取得がタイムアウトしました';
+      default: return '現在地の取得に失敗しました';
+    }
+  }
+
+  function startNavigation(){
+    if(!state.destLatLng){ setStatus('先に目的地を検索してください', 'err'); return; }
+    if(!('geolocation' in navigator)){
+      setStatus('この端末・ブラウザは位置情報(GPS)に対応していません', 'err');
+      return;
+    }
+    startNavBtn.disabled = true;
+    setStatus('現在地を取得しています…');
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        try{
+          const cur = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          setStatus('ルートを検索しています…');
+          const route = await fetchRoute(cur, state.destLatLng);
+          renderRoute(route);
+          state.watchId = navigator.geolocation.watchPosition(onPositionUpdate, onPositionError, {
+            enableHighAccuracy: true, timeout: 15000, maximumAge: 2000
+          });
+          state.navigating = true;
+          state.followMode = true;
+          destInput.disabled = true;
+          searchBtn.disabled = true;
+          startNavBtn.hidden = true;
+          stopNavBtn.hidden = false;
+          onPositionUpdate(pos);
+          setStatus('ナビを開始しました', 'ok');
+        }catch(err){
+          setStatus(err.message || 'ナビを開始できませんでした', 'err');
+          startNavBtn.disabled = false;
+        }
+      },
+      (err) => {
+        setStatus(geoErrorMessage(err), 'err');
+        startNavBtn.disabled = false;
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 }
+    );
+  }
+
+  function stopNavigation(message){
+    if(state.watchId != null){ navigator.geolocation.clearWatch(state.watchId); state.watchId = null; }
+    state.navigating = false;
+    state.offRouteStreak = 0;
+    state.rerouting = false;
+    state.followMode = true;
+    destInput.disabled = false;
+    searchBtn.disabled = false;
+    startNavBtn.hidden = false;
+    startNavBtn.disabled = false;
+    stopNavBtn.hidden = true;
+    recenterBtn.hidden = true;
+    setMapRotation(0);
+    if(state.currentMarker){ map.removeLayer(state.currentMarker); state.currentMarker = null; }
+    if(state.accuracyCircle){ map.removeLayer(state.accuracyCircle); state.accuracyCircle = null; }
+    if(message) setStatus(message);
+  }
+
+  // ---------------- Live position handling ----------------
+  function onPositionUpdate(pos){
+    const lat = pos.coords.latitude, lng = pos.coords.longitude;
+    const heading = (pos.coords.heading != null && !isNaN(pos.coords.heading)) ? pos.coords.heading : state.lastHeading;
+    const speedMps = pos.coords.speed;
+    state.lastHeading = heading;
+
+    updateCurrentMarker(lat, lng, pos.coords.accuracy);
+    applyOrientation(heading);
+    if(state.followMode) recenterMap(lat, lng);
+    updateNavStats(lat, lng, speedMps);
+    checkOffRoute(lat, lng);
+    maybeBroadcastLocation(lat, lng);
+  }
+
+  function onPositionError(err){
+    setStatus(geoErrorMessage(err), 'err');
+  }
+
+  function updateCurrentMarker(lat, lng, accuracy){
+    const ll = [lat, lng];
+    if(!state.currentMarker){
+      const icon = L.divIcon({ className: 'nav-marker-wrap', html: '<div class="nav-arrow"></div>', iconSize: [28,28], iconAnchor:[14,14] });
+      state.currentMarker = L.marker(ll, { icon: icon, zIndexOffset: 1000 }).addTo(map);
+    }else{
+      state.currentMarker.setLatLng(ll);
+    }
+    if(accuracy){
+      if(!state.accuracyCircle){
+        state.accuracyCircle = L.circle(ll, { radius: accuracy, color:'#2f80ff', weight:1, fillColor:'#2f80ff', fillOpacity:.12 }).addTo(map);
+      }else{
+        state.accuracyCircle.setLatLng(ll);
+        state.accuracyCircle.setRadius(accuracy);
+      }
+    }
+  }
+
+  function recenterMap(lat, lng){
+    map.setView([lat, lng], map.getZoom(), { animate: true, duration: 0.25 });
+  }
+
+  map.on('dragstart', () => {
+    if(state.navigating && state.followMode){
+      state.followMode = false;
+      recenterBtn.hidden = false;
+    }
+  });
+  recenterBtn.addEventListener('click', () => {
+    state.followMode = true;
+    recenterBtn.hidden = true;
+    if(state.currentMarker){
+      const ll = state.currentMarker.getLatLng();
+      recenterMap(ll.lat, ll.lng);
+    }
+  });
+
+  orientBtn.addEventListener('click', () => {
+    state.headingUp = !state.headingUp;
+    orientBtn.textContent = state.headingUp ? '⬆ 進行方向' : '⬆ 北固定';
+    applyOrientation(state.lastHeading);
+  });
+
+  // ---------------- Map / marker orientation ----------------
+  function setMapRotation(deg){
+    mapEl.style.transform = `translate(-50%, -50%) rotate(${deg}deg)`;
+  }
+  function setMarkerRotation(deg){
+    if(!state.currentMarker) return;
+    const el = state.currentMarker.getElement();
+    if(!el) return;
+    const arrow = el.querySelector('.nav-arrow');
+    if(arrow) arrow.style.transform = `rotate(${deg}deg)`;
+  }
+  function applyOrientation(heading){
+    if(state.headingUp){
+      setMapRotation(-heading);
+      setMarkerRotation(heading); // 地図側の回転を打ち消して、矢印は常に画面上向きになる
+    }else{
+      setMapRotation(0);
+      setMarkerRotation(heading); // 地図は北固定のまま、矢印だけが進行方向を向く
+    }
+  }
+
+  // ---------------- Distance / ETA ----------------
+  function updateNavStats(lat, lng, speedMps){
+    if(!state.routeGeoJSON) return;
+    const pt = turf.point([lng, lat]);
+    const snapped = turf.nearestPointOnLine(state.routeGeoJSON, pt, { units: 'kilometers' });
+    const traveledKm = snapped.properties.location;
+    const remainingKm = Math.max(0, state.routeLengthKm - traveledKm);
+
+    distValue.textContent = remainingKm >= 1 ? remainingKm.toFixed(1) + ' km' : Math.round(remainingKm * 1000) + ' m';
+
+    const speedKmh = (speedMps != null && !isNaN(speedMps) && speedMps > 0.5) ? speedMps * 3.6 : FALLBACK_SPEED_KMH;
+    const etaMinutes = remainingKm > 0 ? (remainingKm / speedKmh) * 60 : 0;
+    etaMinValue.textContent = Math.max(0, Math.round(etaMinutes)) + ' 分';
+
+    const arrival = new Date(Date.now() + etaMinutes * 60000);
+    etaValue.textContent = String(arrival.getHours()).padStart(2, '0') + ':' + String(arrival.getMinutes()).padStart(2, '0');
+
+    if(remainingKm < ARRIVAL_THRESHOLD_KM){
+      stopNavigation('🏁 目的地に到着しました');
+    }
+  }
+
+  // ---------------- Off-route detection & auto re-route ----------------
+  function checkOffRoute(lat, lng){
+    if(!state.routeGeoJSON || state.rerouting) return;
+    const pt = turf.point([lng, lat]);
+    const distMeters = turf.pointToLineDistance(pt, state.routeGeoJSON, { units: 'kilometers' }) * 1000;
+    if(distMeters > OFF_ROUTE_THRESHOLD_M){
+      state.offRouteStreak += 1;
+      if(state.offRouteStreak >= OFF_ROUTE_CONFIRM_COUNT && (Date.now() - state.lastRerouteAt) > REROUTE_COOLDOWN_MS){
+        performReroute(lat, lng);
+      }
+    }else{
+      state.offRouteStreak = 0;
+    }
+  }
+
+  async function performReroute(lat, lng){
+    state.rerouting = true;
+    state.offRouteStreak = 0;
+    setStatus('🔄 ルートを外れました。再ルート検索中…');
+    try{
+      const route = await fetchRoute({ lat: lat, lng: lng }, state.destLatLng);
+      renderRoute(route);
+      state.lastRerouteAt = Date.now();
+      setStatus('✅ 再ルートしました', 'ok');
+    }catch(err){
+      setStatus(err.message || '再ルート検索に失敗しました', 'err');
+    }finally{
+      state.rerouting = false;
+    }
+  }
+
+  // ---------------------------------------------------------
+  // グループ位置共有機能（数人でのツーリング向け）
+  //  - Firebase Realtime Database を無料の中継サーバーとして利用し、
+  //    「合言葉(ルームコード)」を共有しているメンバー同士で現在地だけを共有します
+  //    (音声チャット・通話機能は持たせていません。通話にはLINE等をご利用ください)。
+  //  - 利用には無料のFirebaseプロジェクトの作成とconfigの貼り付けが必要です
+  //    (初回、👥ボタンを押した時にダイアログが表示されます)。
+  //  - 位置共有は「ナビ開始」していなくても、グループに参加している間は
+  //    独立したGPS監視で動作します(目的地を設定していない仲間でも共有できます)。
+  //  - 「⏹ アプリの利用を停止」を押すまで共有を続けます。ただし、ブラウザの
+  //    タブが完全にバックグラウンドになる(他のアプリに切り替える・画面をロックする)と、
+  //    OS/ブラウザの制約により多くの端末で位置情報の更新が一時停止します。
+  //    これはWebアプリの一般的な制約であり、このアプリ固有の不具合ではありません。
+  //    タブに戻ると自動的に更新が再開します。Wake Lock APIに対応した端末では、
+  //    グループ参加中は画面がスリープしないようにして、できる限り更新を継続します。
+  // ---------------------------------------------------------
+
+  const MEMBER_LOCATION_MIN_INTERVAL_MS = 4000; // 位置情報の書き込み頻度を抑える(Firebase無料枠の節約)
+  const MEMBER_COLORS = ['#e05555','#2ecc71','#f5a623','#9b59b6','#1abc9c','#e67e22','#3498db','#e84393'];
+
+  const groupState = {
+    fb: null,
+    roomId: null,
+    myId: null,
+    myName: null,
+    joined: false,
+    members: {},
+    memberMarkers: {},
+    membersRef: null,
+    locationWatchId: null,
+    lastLocationPushAt: 0,
+    wakeLock: null,
+  };
+
+  const groupBtn = document.getElementById('groupBtn');
+  const memberCountBadge = document.getElementById('memberCountBadge');
+  const groupPanel = document.getElementById('groupPanel');
+  const closeGroupPanel = document.getElementById('closeGroupPanel');
+  const groupJoinView = document.getElementById('groupJoinView');
+  const groupMembersView = document.getElementById('groupMembersView');
+  const roomCodeInput = document.getElementById('roomCodeInput');
+  const nameInput = document.getElementById('nameInput');
+  const joinGroupBtn = document.getElementById('joinGroupBtn');
+  const leaveGroupBtn = document.getElementById('leaveGroupBtn');
+  const roomCodeLabel = document.getElementById('roomCodeLabel');
+  const memberList = document.getElementById('memberList');
+  const inviteQr = document.getElementById('inviteQr');
+  const inviteFileWarning = document.getElementById('inviteFileWarning');
+  const copyInviteBtn = document.getElementById('copyInviteBtn');
+  const setupModal = document.getElementById('setupModal');
+  const fbConfigInput = document.getElementById('fbConfigInput');
+  const saveFbConfigBtn = document.getElementById('saveFbConfigBtn');
+  const skipFbConfigBtn = document.getElementById('skipFbConfigBtn');
+
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  }
+  function memberColor(id){
+    let h = 0;
+    for(let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+    return MEMBER_COLORS[h % MEMBER_COLORS.length];
+  }
+  function randomId(){
+    return 'm' + Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  }
+
+  // ---------------- Firebase bootstrap ----------------
+  function loadFirebaseConfig(){
+    try{
+      const raw = localStorage.getItem('carnav_fb_config');
+      return raw ? JSON.parse(raw) : null;
+    }catch(e){ return null; }
+  }
+  function saveFirebaseConfigToStorage(cfg){
+    localStorage.setItem('carnav_fb_config', JSON.stringify(cfg));
+  }
+
+  function initFirebaseIfPossible(){
+    if(groupState.fb) return true;
+    if(typeof firebase === 'undefined') return false;
+    const cfg = loadFirebaseConfig();
+    if(!cfg) return false;
+    try{
+      if(!firebase.apps || !firebase.apps.length) firebase.initializeApp(cfg);
+      groupState.fb = firebase.database();
+      return true;
+    }catch(err){
+      console.error(err);
+      setStatus('Firebaseの初期化に失敗しました。設定内容をご確認ください', 'err');
+      return false;
+    }
+  }
+
+  function ensureIdentity(){
+    let id = localStorage.getItem('carnav_member_id');
+    if(!id){ id = randomId(); localStorage.setItem('carnav_member_id', id); }
+    groupState.myId = id;
+    const savedName = localStorage.getItem('carnav_member_name');
+    if(savedName) nameInput.value = savedName;
+    const savedRoom = localStorage.getItem('carnav_room_id');
+    if(savedRoom) roomCodeInput.value = savedRoom;
+    // 招待QRコード経由でアクセスした場合(?room=...)は、保存済みの合言葉より優先する
+    const urlRoom = new URLSearchParams(window.location.search).get('room');
+    if(urlRoom) roomCodeInput.value = urlRoom;
+  }
+  ensureIdentity();
+  initFirebaseIfPossible(); // 保存済みのFirebase設定があれば静かに初期化しておく
+
+  // ---------------- 招待QRコード ----------------
+  function buildInviteUrl(roomId){
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.hash = '';
+    url.searchParams.set('room', roomId);
+    return url.toString();
+  }
+
+  function renderInviteQr(roomId){
+    const inviteUrl = buildInviteUrl(roomId);
+    inviteFileWarning.hidden = window.location.protocol !== 'file:';
+    inviteQr.innerHTML = '';
+    if(typeof QRCode === 'undefined') return; // ライブラリが読み込めなかった場合は静かに諦める
+    new QRCode(inviteQr, {
+      text: inviteUrl, width: 160, height: 160,
+      colorDark: '#0b1220', colorLight: '#ffffff'
+    });
+    copyInviteBtn.onclick = () => {
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(inviteUrl)
+          .then(() => setStatus('招待リンクをコピーしました', 'ok'))
+          .catch(() => setStatus('コピーできませんでした。QRコードをご利用ください', 'err'));
+      }else{
+        setStatus('お使いの環境ではコピーできません。QRコードをご利用ください', 'err');
+      }
+    };
+  }
+
+  groupBtn.addEventListener('click', () => {
+    if(!initFirebaseIfPossible()){ setupModal.hidden = false; return; }
+    groupPanel.hidden = false;
+  });
+  closeGroupPanel.addEventListener('click', () => { groupPanel.hidden = true; });
+
+  saveFbConfigBtn.addEventListener('click', () => {
+    const raw = fbConfigInput.value.trim();
+    if(!raw){ setStatus('Firebaseの設定を貼り付けてください', 'err'); return; }
+    try{
+      const cfg = JSON.parse(raw);
+      saveFirebaseConfigToStorage(cfg);
+      setupModal.hidden = true;
+      if(initFirebaseIfPossible()){ groupPanel.hidden = false; setStatus('Firebaseを設定しました', 'ok'); }
+    }catch(err){
+      setStatus('設定内容(JSON)を正しく貼り付けてください', 'err');
+    }
+  });
+  skipFbConfigBtn.addEventListener('click', () => { setupModal.hidden = true; });
+
+  // ---------------- Group join / leave ----------------
+  joinGroupBtn.addEventListener('click', joinGroup);
+  leaveGroupBtn.addEventListener('click', leaveGroup);
+
+  function joinGroup(){
+    const roomId = roomCodeInput.value.trim();
+    const name = nameInput.value.trim();
+    if(!roomId || !name){ setStatus('合言葉と表示名を入力してください', 'err'); return; }
+    if(!groupState.fb){ setStatus('Firebaseが設定されていません', 'err'); return; }
+
+    groupState.roomId = roomId;
+    groupState.myName = name;
+    localStorage.setItem('carnav_member_name', name);
+    localStorage.setItem('carnav_room_id', roomId);
+
+    const myRef = groupState.fb.ref(`groups/${roomId}/members/${groupState.myId}`);
+    myRef.onDisconnect().remove();
+    myRef.set({ name: name, lat: null, lng: null, updatedAt: Date.now() });
+
+    groupState.membersRef = groupState.fb.ref(`groups/${roomId}/members`);
+    groupState.membersRef.on('value', onMembersSnapshot);
+
+    startGroupLocationWatch();
+    requestWakeLock();
+
+    groupState.joined = true;
+    groupJoinView.hidden = true;
+    groupMembersView.hidden = false;
+    roomCodeLabel.textContent = '合言葉: ' + roomId;
+    renderInviteQr(roomId);
+    setStatus('位置共有を開始しました', 'ok');
+  }
+
+  function leaveGroup(){
+    stopGroupLocationWatch();
+    releaseWakeLock();
+    if(groupState.membersRef) groupState.membersRef.off('value', onMembersSnapshot);
+    if(groupState.roomId && groupState.fb){
+      groupState.fb.ref(`groups/${groupState.roomId}/members/${groupState.myId}`).remove();
+    }
+    Object.keys(groupState.memberMarkers).forEach(id => { map.removeLayer(groupState.memberMarkers[id]); });
+    groupState.memberMarkers = {};
+    groupState.members = {};
+    groupState.joined = false;
+    groupState.roomId = null;
+    groupJoinView.hidden = false;
+    groupMembersView.hidden = true;
+    memberCountBadge.hidden = true;
+    inviteQr.innerHTML = '';
+    setStatus('位置共有を停止しました');
+  }
+
+  // グループに参加している間、画面がスリープしないようにできる限り試みる
+  // (対応ブラウザのみ。対応していなくても位置共有機能自体は動作する)。
+  async function requestWakeLock(){
+    if(!('wakeLock' in navigator)) return;
+    try{
+      groupState.wakeLock = await navigator.wakeLock.request('screen');
+    }catch(err){
+      groupState.wakeLock = null;
+    }
+  }
+  function releaseWakeLock(){
+    if(groupState.wakeLock){
+      groupState.wakeLock.release().catch(() => {});
+      groupState.wakeLock = null;
+    }
+  }
+  // Wake Lockはタブが非表示になると自動解除される仕様のため、再び前面に
+  // 戻ってきた時に(参加中であれば)取り直し、あわせて最新位置を即座に取得する。
+  document.addEventListener('visibilitychange', () => {
+    if(document.visibilityState !== 'visible' || !groupState.joined) return;
+    requestWakeLock();
+    if('geolocation' in navigator){
+      navigator.geolocation.getCurrentPosition(
+        (pos) => { maybeBroadcastLocation(pos.coords.latitude, pos.coords.longitude, true); },
+        () => {},
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+      );
+    }
+  });
+
+  // グループに参加している間は、ナビ(目的地への案内)を開始していなくても
+  // 独立したGPS監視で自分の位置を仲間に共有し続ける。
+  function startGroupLocationWatch(){
+    if(groupState.locationWatchId != null || !('geolocation' in navigator)) return;
+    groupState.locationWatchId = navigator.geolocation.watchPosition(
+      (pos) => { maybeBroadcastLocation(pos.coords.latitude, pos.coords.longitude); },
+      () => {},
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 4000 }
+    );
+  }
+  function stopGroupLocationWatch(){
+    if(groupState.locationWatchId != null){
+      navigator.geolocation.clearWatch(groupState.locationWatchId);
+      groupState.locationWatchId = null;
+    }
+  }
+
+  function maybeBroadcastLocation(lat, lng, force){
+    if(!groupState.joined || !groupState.fb) return;
+    const now = Date.now();
+    if(!force && now - groupState.lastLocationPushAt < MEMBER_LOCATION_MIN_INTERVAL_MS) return;
+    groupState.lastLocationPushAt = now;
+    groupState.fb.ref(`groups/${groupState.roomId}/members/${groupState.myId}`).update({
+      name: groupState.myName, lat: lat, lng: lng, updatedAt: now
+    });
+  }
+
+  function onMembersSnapshot(snapshot){
+    groupState.members = snapshot.val() || {};
+    renderMemberList();
+    renderMemberMarkers();
+  }
+
+  function renderMemberList(){
+    const ids = Object.keys(groupState.members).filter(id => id !== groupState.myId);
+    memberCountBadge.hidden = ids.length === 0;
+    memberCountBadge.textContent = String(ids.length);
+    if(!ids.length){
+      memberList.innerHTML = '<div style="font-size:13px;color:#8a97ab;padding:8px 0;">まだ他のメンバーはいません</div>';
+      return;
+    }
+    memberList.innerHTML = '';
+    ids.forEach(id => {
+      const m = groupState.members[id];
+      const row = document.createElement('div');
+      row.className = 'member-row';
+      let distText = '';
+      if(m.lat != null && m.lng != null && state.currentMarker){
+        const me = state.currentMarker.getLatLng();
+        const distKm = turf.distance(turf.point([me.lng, me.lat]), turf.point([m.lng, m.lat]), { units: 'kilometers' });
+        distText = distKm >= 1 ? distKm.toFixed(1) + ' km' : Math.round(distKm * 1000) + ' m';
+      }
+      row.innerHTML = `<span class="member-dot" style="background:${memberColor(id)}"></span><span class="member-name">${escapeHtml(m.name || '(名前未設定)')}</span><span class="member-dist">${distText}</span>`;
+      memberList.appendChild(row);
+    });
+  }
+
+  function renderMemberMarkers(){
+    const ids = Object.keys(groupState.members).filter(id => id !== groupState.myId);
+    Object.keys(groupState.memberMarkers).forEach(id => {
+      if(ids.indexOf(id) === -1){
+        map.removeLayer(groupState.memberMarkers[id]);
+        delete groupState.memberMarkers[id];
+      }
+    });
+    ids.forEach(id => {
+      const m = groupState.members[id];
+      if(m.lat == null || m.lng == null) return;
+      const initial = (m.name || '?').slice(0, 1).toUpperCase();
+      if(!groupState.memberMarkers[id]){
+        const icon = L.divIcon({
+          className: '',
+          html: `<div class="member-marker" style="background:${memberColor(id)}">${escapeHtml(initial)}</div>`,
+          iconSize: [30, 30], iconAnchor: [15, 15]
+        });
+        groupState.memberMarkers[id] = L.marker([m.lat, m.lng], { icon: icon, title: m.name }).addTo(map);
+      }else{
+        groupState.memberMarkers[id].setLatLng([m.lat, m.lng]);
+      }
+    });
+  }
+
+})();
+</script>
+</body>
+</html>
