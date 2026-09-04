@@ -135,6 +135,10 @@
   #inviteSection { margin-top:14px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.08); text-align:center; }
   #inviteLabel { font-size:12px; color:#9fb3d9; margin-bottom:10px; line-height:1.5; }
   #inviteQr, #configTransferQr { display:flex; justify-content:center; background:#fff; border-radius:10px; padding:10px; width:fit-content; margin:0 auto; }
+  .copy-url-input {
+    display:block; width:100%; box-sizing:border-box; margin-top:10px; border:none; border-radius:10px;
+    padding:10px 12px; font-size:12px; font-family:monospace; background:#0f1622; color:#9fb3d9;
+  }
   #inviteFileWarning { font-size:12px; color:#f5c268; margin-top:10px; line-height:1.6; text-align:left; background:#3a2f18; border-radius:8px; padding:8px 10px; }
   #copyInviteBtn {
     margin-top:10px; width:100%; border:none; border-radius:10px; padding:11px; font-size:14px; font-weight:700;
@@ -212,6 +216,7 @@
           <div id="inviteLabel">📱 このQRコードを仲間に読み取ってもらうと、同じグループに参加できます</div>
           <div id="inviteQr"></div>
           <div id="inviteFileWarning" hidden>⚠️ このファイルをそのまま開いている状態(file://)では、他の端末からQRコードを開けません。招待には、このファイルをHTTPS上にホスティングしてから配ってください。</div>
+          <input id="inviteUrlText" class="copy-url-input" type="text" readonly>
           <button id="copyInviteBtn">🔗 招待リンクをコピー</button>
         </div>
         <button id="leaveGroupBtn">⏹ アプリの利用を停止</button>
@@ -235,7 +240,9 @@
       <h2>📲 設定をスマホへ転送</h2>
       <p>この端末に保存済みのFirebase設定を、スマートフォンのカメラで下のQRコードを読み取るだけでコピーできます（入力の手間なし）。カメラアプリで読み取り、表示されたリンクを開くと自動的に保存されます。</p>
       <div id="configTransferQr"></div>
+      <input id="configTransferUrlText" class="copy-url-input" type="text" readonly>
       <button id="copyConfigTransferBtn">🔗 リンクをコピー</button>
+      <p style="font-size:12px;">コピーがうまくいかない場合は、上のリンクの欄をタップ(クリック)すると全体が選択されるので、そのままコピー(Ctrl+C / Cmd+C)してください。</p>
       <button id="closeConfigTransferBtn" class="modal-skip">閉じる</button>
     </div>
   </div>
@@ -633,6 +640,7 @@
   const memberList = document.getElementById('memberList');
   const inviteQr = document.getElementById('inviteQr');
   const inviteFileWarning = document.getElementById('inviteFileWarning');
+  const inviteUrlText = document.getElementById('inviteUrlText');
   const copyInviteBtn = document.getElementById('copyInviteBtn');
   const setupModal = document.getElementById('setupModal');
   const fbConfigInput = document.getElementById('fbConfigInput');
@@ -641,11 +649,53 @@
   const transferConfigBtn = document.getElementById('transferConfigBtn');
   const configTransferModal = document.getElementById('configTransferModal');
   const configTransferQr = document.getElementById('configTransferQr');
+  const configTransferUrlText = document.getElementById('configTransferUrlText');
   const copyConfigTransferBtn = document.getElementById('copyConfigTransferBtn');
   const closeConfigTransferBtn = document.getElementById('closeConfigTransferBtn');
 
   function escapeHtml(s){
     return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  }
+  // タップ/クリックで全選択(コピーボタンが使えない環境向けの手動コピー用)
+  function makeTapToSelect(input){
+    input.addEventListener('focus', () => input.select());
+    input.addEventListener('click', () => input.select());
+  }
+  // navigator.clipboard はブラウザ設定・企業ポリシー・古いSafari等で使えないことがあるため、
+  // 失敗時は昔ながらのdocument.execCommand('copy')にフォールバックする。
+  // (navigator.clipboard.writeTextが「非同期の失敗(reject)」ではなく「同期的な例外」を
+  //  投げる実装もあるため、try/catchで両方のケースを確実に拾う)
+  function fallbackCopyToClipboard(text){
+    try{
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.top = '0';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      const ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      return ok;
+    }catch(err){
+      return false;
+    }
+  }
+  function copyTextToClipboard(text){
+    return new Promise((resolve) => {
+      try{
+        if(navigator.clipboard && navigator.clipboard.writeText){
+          navigator.clipboard.writeText(text)
+            .then(() => resolve(true))
+            .catch(() => resolve(fallbackCopyToClipboard(text)));
+          return;
+        }
+      }catch(err){ /* 一部の環境では呼び出し自体が同期的に例外を投げるため、下のフォールバックに続ける */ }
+      resolve(fallbackCopyToClipboard(text));
+    });
   }
   // UTF-8セーフなbase64エンコード/デコード(Firebase設定をURLに埋め込むため)
   function b64EncodeUtf8(str){
@@ -749,14 +799,11 @@
         correctLevel: (typeof QRCode.CorrectLevel !== 'undefined') ? QRCode.CorrectLevel.L : undefined
       });
     }
+    configTransferUrlText.value = transferUrl;
     copyConfigTransferBtn.onclick = () => {
-      if(navigator.clipboard && navigator.clipboard.writeText){
-        navigator.clipboard.writeText(transferUrl)
-          .then(() => setStatus('リンクをコピーしました', 'ok'))
-          .catch(() => setStatus('コピーできませんでした。QRコードをご利用ください', 'err'));
-      }else{
-        setStatus('お使いの環境ではコピーできません。QRコードをご利用ください', 'err');
-      }
+      copyTextToClipboard(transferUrl).then(ok => {
+        setStatus(ok ? 'リンクをコピーしました' : 'コピーできませんでした。上の欄をタップして手動でコピーしてください', ok ? 'ok' : 'err');
+      });
     };
   }
   transferConfigBtn.addEventListener('click', () => {
@@ -787,6 +834,8 @@
   ensureIdentity();
   initFirebaseIfPossible(); // 保存済みのFirebase設定があれば静かに初期化しておく
   updateTransferConfigBtnVisibility();
+  makeTapToSelect(inviteUrlText);
+  makeTapToSelect(configTransferUrlText);
 
   // ---------------- 招待QRコード ----------------
   function buildInviteUrl(roomId){
@@ -807,14 +856,11 @@
       colorDark: '#0b1220', colorLight: '#ffffff',
       correctLevel: (typeof QRCode.CorrectLevel !== 'undefined') ? QRCode.CorrectLevel.L : undefined
     });
+    inviteUrlText.value = inviteUrl;
     copyInviteBtn.onclick = () => {
-      if(navigator.clipboard && navigator.clipboard.writeText){
-        navigator.clipboard.writeText(inviteUrl)
-          .then(() => setStatus('招待リンクをコピーしました', 'ok'))
-          .catch(() => setStatus('コピーできませんでした。QRコードをご利用ください', 'err'));
-      }else{
-        setStatus('お使いの環境ではコピーできません。QRコードをご利用ください', 'err');
-      }
+      copyTextToClipboard(inviteUrl).then(ok => {
+        setStatus(ok ? '招待リンクをコピーしました' : 'コピーできませんでした。上の欄をタップして手動でコピーしてください', ok ? 'ok' : 'err');
+      });
     };
   }
 
