@@ -134,7 +134,7 @@
 
   #inviteSection { margin-top:14px; padding-top:14px; border-top:1px solid rgba(255,255,255,0.08); text-align:center; }
   #inviteLabel { font-size:12px; color:#9fb3d9; margin-bottom:10px; line-height:1.5; }
-  #inviteQr { display:flex; justify-content:center; background:#fff; border-radius:10px; padding:10px; width:fit-content; margin:0 auto; }
+  #inviteQr, #configTransferQr { display:flex; justify-content:center; background:#fff; border-radius:10px; padding:10px; width:fit-content; margin:0 auto; }
   #inviteFileWarning { font-size:12px; color:#f5c268; margin-top:10px; line-height:1.6; text-align:left; background:#3a2f18; border-radius:8px; padding:8px 10px; }
   #copyInviteBtn {
     margin-top:10px; width:100%; border:none; border-radius:10px; padding:11px; font-size:14px; font-weight:700;
@@ -181,6 +181,7 @@
     <button id="orientBtn" class="ctrl-btn">⬆ 進行方向</button>
     <button id="recenterBtn" class="ctrl-btn" hidden title="現在地に戻る">🎯</button>
     <button id="groupBtn" class="ctrl-btn" title="グループ">👥<span class="badge" id="memberCountBadge" hidden>0</span></button>
+    <button id="transferConfigBtn" class="ctrl-btn" hidden title="設定をスマホへ転送">📲</button>
   </div>
 
   <div id="bottomPanel" class="panel" hidden>
@@ -226,6 +227,16 @@
       <textarea id="fbConfigInput" placeholder='{"apiKey":"...","databaseURL":"https://xxxx.firebaseio.com", ...}'></textarea>
       <button id="saveFbConfigBtn">保存して有効化</button>
       <button id="skipFbConfigBtn" class="modal-skip">あとで設定する（ナビ機能のみ使う）</button>
+    </div>
+  </div>
+
+  <div id="configTransferModal" class="modal-backdrop" hidden>
+    <div class="modal-box">
+      <h2>📲 設定をスマホへ転送</h2>
+      <p>この端末に保存済みのFirebase設定を、スマートフォンのカメラで下のQRコードを読み取るだけでコピーできます（入力の手間なし）。カメラアプリで読み取り、表示されたリンクを開くと自動的に保存されます。</p>
+      <div id="configTransferQr"></div>
+      <button id="copyConfigTransferBtn">🔗 リンクをコピー</button>
+      <button id="closeConfigTransferBtn" class="modal-skip">閉じる</button>
     </div>
   </div>
 </div>
@@ -627,9 +638,28 @@
   const fbConfigInput = document.getElementById('fbConfigInput');
   const saveFbConfigBtn = document.getElementById('saveFbConfigBtn');
   const skipFbConfigBtn = document.getElementById('skipFbConfigBtn');
+  const transferConfigBtn = document.getElementById('transferConfigBtn');
+  const configTransferModal = document.getElementById('configTransferModal');
+  const configTransferQr = document.getElementById('configTransferQr');
+  const copyConfigTransferBtn = document.getElementById('copyConfigTransferBtn');
+  const closeConfigTransferBtn = document.getElementById('closeConfigTransferBtn');
 
   function escapeHtml(s){
     return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
+  }
+  // UTF-8セーフなbase64エンコード/デコード(Firebase設定をURLに埋め込むため)
+  function b64EncodeUtf8(str){
+    const bytes = new TextEncoder().encode(str);
+    let bin = '';
+    for(let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  function b64DecodeUtf8(b64){
+    const padded = b64.replace(/-/g, '+').replace(/_/g, '/').padEnd(b64.length + (4 - (b64.length % 4 || 4)) % 4, '=');
+    const bin = atob(padded);
+    const bytes = new Uint8Array(bin.length);
+    for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
   }
   function memberColor(id){
     let h = 0;
@@ -679,8 +709,70 @@
     const urlRoom = new URLSearchParams(window.location.search).get('room');
     if(urlRoom) roomCodeInput.value = urlRoom;
   }
+
+  // ---------------- 設定転送QRコード(この端末→別の端末へFirebase設定をコピー) ----------------
+  // 「?fbconfig=…」付きのリンクを別の端末(スマホ)で開くと、手入力なしで
+  // Firebaseの設定を自動的にこの端末に保存する。QRコードはこのリンクを
+  // 埋め込んだものを表示するだけで、カメラで読み取れば手入力が不要になる。
+  function updateTransferConfigBtnVisibility(){
+    transferConfigBtn.hidden = !loadFirebaseConfig();
+  }
+  function buildConfigTransferUrl(cfg){
+    const url = new URL(window.location.href);
+    url.search = '';
+    url.hash = '';
+    url.searchParams.set('fbconfig', b64EncodeUtf8(JSON.stringify(cfg)));
+    return url.toString();
+  }
+  function renderConfigTransferQr(){
+    const cfg = loadFirebaseConfig();
+    if(!cfg) return;
+    const transferUrl = buildConfigTransferUrl(cfg);
+    configTransferQr.innerHTML = '';
+    if(typeof QRCode !== 'undefined'){
+      new QRCode(configTransferQr, {
+        text: transferUrl, width: 200, height: 200,
+        colorDark: '#0b1220', colorLight: '#ffffff'
+      });
+    }
+    copyConfigTransferBtn.onclick = () => {
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(transferUrl)
+          .then(() => setStatus('リンクをコピーしました', 'ok'))
+          .catch(() => setStatus('コピーできませんでした。QRコードをご利用ください', 'err'));
+      }else{
+        setStatus('お使いの環境ではコピーできません。QRコードをご利用ください', 'err');
+      }
+    };
+  }
+  transferConfigBtn.addEventListener('click', () => {
+    renderConfigTransferQr();
+    configTransferModal.hidden = false;
+  });
+  closeConfigTransferBtn.addEventListener('click', () => { configTransferModal.hidden = true; });
+
+  // 「?fbconfig=…」付きのリンクを開いた端末では、その場でFirebase設定を取り込んで保存する
+  function applyFbConfigFromUrl(){
+    const raw = new URLSearchParams(window.location.search).get('fbconfig');
+    if(!raw) return;
+    try{
+      const cfg = JSON.parse(b64DecodeUtf8(raw));
+      if(!cfg || typeof cfg !== 'object') throw new Error('invalid config');
+      saveFirebaseConfigToStorage(cfg);
+      const url = new URL(window.location.href);
+      url.searchParams.delete('fbconfig');
+      history.replaceState(null, '', url.toString());
+      setStatus('📲 この端末にFirebaseの設定を読み込みました', 'ok');
+    }catch(err){
+      console.error(err);
+      setStatus('設定の読み込みに失敗しました。QRコードを読み取り直してください', 'err');
+    }
+  }
+
+  applyFbConfigFromUrl();
   ensureIdentity();
   initFirebaseIfPossible(); // 保存済みのFirebase設定があれば静かに初期化しておく
+  updateTransferConfigBtnVisibility();
 
   // ---------------- 招待QRコード ----------------
   function buildInviteUrl(roomId){
@@ -723,6 +815,7 @@
     try{
       const cfg = JSON.parse(raw);
       saveFirebaseConfigToStorage(cfg);
+      updateTransferConfigBtnVisibility();
       setupModal.hidden = true;
       if(initFirebaseIfPossible()){ groupPanel.hidden = false; setStatus('Firebaseを設定しました', 'ok'); }
     }catch(err){
