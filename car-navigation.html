@@ -748,15 +748,18 @@
     for(let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
     return new TextDecoder().decode(bytes);
   }
-  // このアプリはRealtime Databaseしか使わないため、Storage/Messaging/Analytics用の
-  // 項目(storageBucket, messagingSenderId, appId)はQRコードには含めない(読み取りやすさのため)。
-  // キー名を含むJSONではなく "|" 区切りの値だけにすることで、QRコードに埋め込むデータ量を減らす。
+  // Firebaseのconfigをまるごと(全項目)QRコードに含める。項目を減らして
+  // 転送後の設定に差異が出るリスクを避けるため、キー名を含むJSON形式ではなく
+  // "|" 区切りの値だけにすることで、内容は保ったままQRコードのデータ量を減らす。
+  const FB_CONFIG_FIELDS = ['apiKey', 'authDomain', 'databaseURL', 'projectId', 'storageBucket', 'messagingSenderId', 'appId'];
   function packFbConfig(cfg){
-    return [cfg.apiKey || '', cfg.authDomain || '', cfg.databaseURL || '', cfg.projectId || ''].join('|');
+    return FB_CONFIG_FIELDS.map(k => cfg[k] || '').join('|');
   }
   function unpackFbConfig(packed){
     const parts = packed.split('|');
-    return { apiKey: parts[0] || '', authDomain: parts[1] || '', databaseURL: parts[2] || '', projectId: parts[3] || '' };
+    const cfg = {};
+    FB_CONFIG_FIELDS.forEach((k, i) => { cfg[k] = parts[i] || ''; });
+    return cfg;
   }
   function memberColor(id){
     let h = 0;
@@ -933,6 +936,16 @@
   }
 
   groupBtn.addEventListener('click', () => {
+    // 「設定が保存されていない」のか「設定はあるのにFirebaseのライブラリ自体が
+    // 読み込めていない(通信状況などが原因)」のかを区別して表示する。前者だと
+    // 勘違いして、原因を切り分けにくいまま設定画面が再度出てしまうため。
+    const cfg = loadFirebaseConfig();
+    if(!cfg){ setupModal.hidden = false; return; }
+    if(typeof firebase === 'undefined'){
+      setStatus('⚠️ Firebaseの読み込みに失敗しました。通信状態をご確認のうえ、ページを再読み込みしてからもう一度お試しください', 'err');
+      setupModal.hidden = false;
+      return;
+    }
     if(!initFirebaseIfPossible()){ setupModal.hidden = false; return; }
     groupPanel.hidden = false;
   });
