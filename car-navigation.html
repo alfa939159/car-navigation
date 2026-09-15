@@ -66,6 +66,9 @@
   /* --- Bottom panel --- */
   #bottomPanel { bottom:12px; padding:14px 16px; }
   #destLabel { font-size:13px; color:#9fb3d9; margin-bottom:8px; line-height:1.4; }
+  .dest-row { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+  .dest-row #destLabel { margin-bottom:8px; flex:1; }
+  #closeDestBtn { border:none; background:none; color:#8a97ab; font-size:16px; cursor:pointer; line-height:1; padding:0 2px; flex-shrink:0; }
   .nav-stats { display:flex; gap:10px; margin-bottom:12px; }
   .stat { flex:1; background:#0f1622; border-radius:10px; padding:8px 6px; text-align:center; }
   .stat-value { display:block; font-size:19px; font-weight:700; color:#eef2f8; }
@@ -216,7 +219,7 @@
   </div>
 
   <div id="bottomPanel" class="panel" hidden>
-    <div id="destLabel"></div>
+    <div class="dest-row"><div id="destLabel"></div><button id="closeDestBtn" title="目的地をクリア">✕</button></div>
     <div class="nav-stats">
       <div class="stat"><span class="stat-value" id="distValue">--</span><span class="stat-unit">残り距離</span></div>
       <div class="stat"><span class="stat-value" id="etaValue">--:--</span><span class="stat-unit">到着予定</span></div>
@@ -332,9 +335,15 @@
 
   const mapEl = document.getElementById('map');
   const map = L.map('map', { zoomControl: false, attributionControl: false }).setView(DEFAULT_CENTER, 15);
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; OpenStreetMap contributors'
+  // OpenStreetMap本体の無料タイルサーバー(tile.openstreetmap.org)は、あくまで
+  // 「個人の軽い試用」向けの善意運営サーバーで、アプリへの組み込みなど継続的な利用は
+  // 利用規約(tile usage policy)違反として自動的にブロックされてしまう
+  // (実際に発生した "Access blocked" 表示はこれが原因)。
+  // 代わりにCARTOが無料公開しているベースマップタイルを使う(地図データ自体はOSM由来で見た目もほぼ同じ)。
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+    subdomains: 'abcd',
+    maxZoom: 20,
+    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
   }).addTo(map);
 
   const destInput = document.getElementById('destInput');
@@ -344,6 +353,7 @@
   const destLabel = document.getElementById('destLabel');
   const startNavBtn = document.getElementById('startNavBtn');
   const stopNavBtn = document.getElementById('stopNavBtn');
+  const closeDestBtn = document.getElementById('closeDestBtn');
   const distValue = document.getElementById('distValue');
   const etaValue = document.getElementById('etaValue');
   const etaMinValue = document.getElementById('etaMinValue');
@@ -417,6 +427,25 @@
     state.routeLengthKm = turf.length(state.routeGeoJSON, { units: 'kilometers' });
   }
 
+  // 検索窓の内容を消しても目的地パネル(「ナビ開始」ボタンなど)が出しっぱなしになっていたため、
+  // ✕ボタンで目的地をクリアして最初の状態に戻せるようにする。ナビ中に押した場合はナビも終了する。
+  function clearDestination(){
+    if(state.navigating){ stopNavigation(); }
+    if(state.destMarker){ map.removeLayer(state.destMarker); state.destMarker = null; }
+    if(state.routeLine){ map.removeLayer(state.routeLine); state.routeLine = null; }
+    if(state.routeLineOutline){ map.removeLayer(state.routeLineOutline); state.routeLineOutline = null; }
+    state.destLatLng = null;
+    state.destLabel = '';
+    destInput.value = '';
+    bottomPanel.hidden = true;
+    startNavBtn.hidden = false;
+    startNavBtn.disabled = false;
+    stopNavBtn.hidden = true;
+    distValue.textContent = '--'; etaValue.textContent = '--:--'; etaMinValue.textContent = '--';
+    setStatus('目的地をクリアしました', 'ok');
+  }
+  closeDestBtn.addEventListener('click', clearDestination);
+
   // ---------------- Navigation lifecycle ----------------
   startNavBtn.addEventListener('click', startNavigation);
   stopNavBtn.addEventListener('click', () => stopNavigation('ナビを終了しました'));
@@ -450,6 +479,7 @@
           });
           state.navigating = true;
           state.followMode = true;
+          removeMyGroupMarker(); // ナビ開始後は矢印マーカーが自分を表すので、グループ用の自分マーカーは消す
           destInput.disabled = true;
           searchBtn.disabled = true;
           startNavBtn.hidden = true;
@@ -482,8 +512,14 @@
     stopNavBtn.hidden = true;
     recenterBtn.hidden = true;
     setMapRotation(0);
-    if(state.currentMarker){ map.removeLayer(state.currentMarker); state.currentMarker = null; }
+    let lastKnownLatLng = null;
+    if(state.currentMarker){ lastKnownLatLng = state.currentMarker.getLatLng(); map.removeLayer(state.currentMarker); state.currentMarker = null; }
     if(state.accuracyCircle){ map.removeLayer(state.accuracyCircle); state.accuracyCircle = null; }
+    // ナビを終了してもグループに参加したままなら、自分のアイコンマーカーを即座に復活させる
+    // (次のグループ側のGPS更新を待たなくても良いように)。
+    if(groupState.joined && lastKnownLatLng){
+      updateMyGroupMarker(lastKnownLatLng.lat, lastKnownLatLng.lng);
+    }
     if(message) setStatus(message);
   }
 
@@ -655,6 +691,8 @@
     joined: false,
     members: {},
     memberMarkers: {},
+    myMarker: null,
+    hasCenteredOnFirstFix: false,
     membersRef: null,
     locationWatchId: null,
     lastLocationPushAt: 0,
@@ -1011,6 +1049,8 @@
     groupState.members = {};
     groupState.joined = false;
     groupState.roomId = null;
+    removeMyGroupMarker();
+    groupState.hasCenteredOnFirstFix = false;
     groupJoinView.hidden = false;
     groupMembersView.hidden = true;
     memberCountBadge.hidden = true;
@@ -1041,7 +1081,10 @@
     requestWakeLock();
     if('geolocation' in navigator){
       navigator.geolocation.getCurrentPosition(
-        (pos) => { maybeBroadcastLocation(pos.coords.latitude, pos.coords.longitude, true); },
+        (pos) => {
+          maybeBroadcastLocation(pos.coords.latitude, pos.coords.longitude, true);
+          updateMyGroupMarker(pos.coords.latitude, pos.coords.longitude);
+        },
         () => {},
         { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
       );
@@ -1053,8 +1096,16 @@
   function startGroupLocationWatch(){
     if(groupState.locationWatchId != null || !('geolocation' in navigator)) return;
     groupState.locationWatchId = navigator.geolocation.watchPosition(
-      (pos) => { maybeBroadcastLocation(pos.coords.latitude, pos.coords.longitude); },
-      () => {},
+      (pos) => {
+        maybeBroadcastLocation(pos.coords.latitude, pos.coords.longitude);
+        updateMyGroupMarker(pos.coords.latitude, pos.coords.longitude);
+      },
+      (err) => {
+        // 以前はここでエラーを握りつぶしていたため、屋内などでGPSが取得できない時に
+        // 画面上は何の反応もなく「固まっている」ように見えてしまっていた。
+        // 状況が分かるよう、必ず画面上部にメッセージを表示するようにする。
+        setStatus('📍 ' + geoErrorMessage(err) + '(建物内など電波の弱い場所では取得できないことがあります)', 'err');
+      },
       { enableHighAccuracy: true, timeout: 15000, maximumAge: 4000 }
     );
   }
@@ -1113,6 +1164,46 @@
       html: `<div class="member-marker-wrap"><div class="member-marker" style="background:${memberColor(id)}">${memberIcon}</div><div class="member-marker-label">${escapeHtml(name)}</div></div>`,
       key: memberIcon + '|' + name
     };
+  }
+
+  // 自分自身の位置に、選んだアイコン+名前のマーカーを表示する(仲間のマーカーと同じ見た目)。
+  // ナビ中は進行方向を示す矢印マーカー(state.currentMarker)がすでに自分を表しているため、
+  // 重ねて表示しないようにする。
+  function selfMarkerHtml(){
+    const icon = (groupState.myIcon && CAR_ICONS.indexOf(groupState.myIcon) !== -1) ? groupState.myIcon : CAR_ICONS[0];
+    const name = (groupState.myName || '自分') + '(自分)';
+    return {
+      html: `<div class="member-marker-wrap"><div class="member-marker" style="background:#2f80ff;border-color:#fff;">${icon}</div><div class="member-marker-label">${escapeHtml(name)}</div></div>`,
+      key: icon + '|' + name
+    };
+  }
+  function removeMyGroupMarker(){
+    if(groupState.myMarker){ map.removeLayer(groupState.myMarker); groupState.myMarker = null; }
+  }
+  function updateMyGroupMarker(lat, lng){
+    if(state.navigating){
+      // ナビ中は矢印マーカーに任せる(自分のマーカーが二重にならないようにする)
+      removeMyGroupMarker();
+    }else{
+      const { html, key } = selfMarkerHtml();
+      if(!groupState.myMarker){
+        const divIcon = L.divIcon({ className: '', html: html, iconSize: [80, 50], iconAnchor: [40, 16] });
+        groupState.myMarker = L.marker([lat, lng], { icon: divIcon, zIndexOffset: 950 }).addTo(map);
+        groupState.myMarker._carnavContentKey = key;
+      }else{
+        groupState.myMarker.setLatLng([lat, lng]);
+        if(groupState.myMarker._carnavContentKey !== key){
+          groupState.myMarker.setIcon(L.divIcon({ className: '', html: html, iconSize: [80, 50], iconAnchor: [40, 16] }));
+          groupState.myMarker._carnavContentKey = key;
+        }
+      }
+    }
+    // グループ参加後、最初にGPSを取得できた瞬間だけ地図をその位置に合わせる。
+    // それ以降は自由に地図を操作できるよう、勝手に動かさないようにする。
+    if(!groupState.hasCenteredOnFirstFix){
+      groupState.hasCenteredOnFirstFix = true;
+      map.setView([lat, lng], Math.max(map.getZoom(), 16), { animate: true });
+    }
   }
 
   function renderMemberMarkers(){
