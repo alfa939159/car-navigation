@@ -998,6 +998,13 @@
     url.search = '';
     url.hash = '';
     url.searchParams.set('room', roomId);
+    // 招待された仲間が別途「設定転送QR」を読み込む手間を省くため、この端末に保存済みの
+    // Firebase設定があれば同じリンクに含めてしまう。これで初めて使う仲間でも
+    // このQR・リンクを1回読み込むだけで、設定入力なしに合言葉欄まで自動で埋まる。
+    const cfg = loadFirebaseConfig();
+    if(cfg){
+      url.searchParams.set('fbconfig', b64EncodeUtf8(packFbConfig(cfg)));
+    }
     return url.toString();
   }
 
