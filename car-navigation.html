@@ -533,7 +533,8 @@
     updateCurrentMarker(lat, lng, pos.coords.accuracy);
     applyOrientation(heading);
     if(state.followMode) recenterMap(lat, lng);
-    updateNavStats(lat, lng, speedMps);
+    updateNavStats(lat, lng, speedMps); // 到着判定を含む。ここでstopNavigation()が呼ばれ、ナビが自動終了することがある
+    if(!state.navigating) return; // 到着などでナビが終了した直後は、古いルート情報でのオフルート判定/再ルートを行わない
     checkOffRoute(lat, lng);
     maybeBroadcastLocation(lat, lng);
   }
@@ -859,17 +860,28 @@
   }
 
   function ensureIdentity(){
-    let id = localStorage.getItem('carnav_member_id');
-    if(!id){ id = randomId(); localStorage.setItem('carnav_member_id', id); }
+    // プライベートブラウジングモードや端末の設定でlocalStorageが使えない場合に、ここで
+    // 例外が発生すると以降のボタンのイベント登録が一切実行されず、グループ機能全体が
+    // 無反応になってしまう(エラー表示も出ない)ため、必ずtry/catchで保護する。
+    // 保存に失敗しても、その場限りのID発行だけは行い、動作自体は続行できるようにする。
+    let id = null;
+    try{ id = localStorage.getItem('carnav_member_id'); }catch(err){ /* ignore */ }
+    if(!id){
+      id = randomId();
+      try{ localStorage.setItem('carnav_member_id', id); }catch(err){ /* この端末では保存できないが、動作は続行する */ }
+    }
     groupState.myId = id;
-    const savedName = localStorage.getItem('carnav_member_name');
-    if(savedName) nameInput.value = savedName;
-    const savedRoom = localStorage.getItem('carnav_room_id');
-    if(savedRoom) roomCodeInput.value = savedRoom;
+    try{
+      const savedName = localStorage.getItem('carnav_member_name');
+      if(savedName) nameInput.value = savedName;
+      const savedRoom = localStorage.getItem('carnav_room_id');
+      if(savedRoom) roomCodeInput.value = savedRoom;
+    }catch(err){ /* ignore */ }
     // 招待QRコード経由でアクセスした場合(?room=...)は、保存済みの合言葉より優先する
     const urlRoom = new URLSearchParams(window.location.search).get('room');
     if(urlRoom) roomCodeInput.value = urlRoom;
-    const savedIcon = localStorage.getItem('carnav_member_icon');
+    let savedIcon = null;
+    try{ savedIcon = localStorage.getItem('carnav_member_icon'); }catch(err){ /* ignore */ }
     groupState.myIcon = (savedIcon && CAR_ICONS.indexOf(savedIcon) !== -1) ? savedIcon : CAR_ICONS[0];
   }
 
@@ -891,7 +903,7 @@
   }
   function selectIcon(icon){
     groupState.myIcon = icon;
-    localStorage.setItem('carnav_member_icon', icon);
+    try{ localStorage.setItem('carnav_member_icon', icon); }catch(err){ /* 保存できなくても選択自体は反映する */ }
     renderIconPickers();
     // 参加中に変更した場合は、次のGPS更新を待たずにすぐ仲間の画面へ反映する
     if(groupState.joined && groupState.fb){
@@ -1052,6 +1064,10 @@
   leaveGroupBtn.addEventListener('click', leaveGroup);
 
   function joinGroup(){
+    // スマホでのすばやい連続タップ(ダブルタップ)などで参加処理が2回走ってしまうと、
+    // Firebaseのリスナー登録やWake Lockの取得が二重になってしまうため、
+    // すでに参加済みなら何もしない。
+    if(groupState.joined) return;
     const roomId = roomCodeInput.value.trim();
     const name = nameInput.value.trim();
     if(!roomId || !name){ setStatus('合言葉と表示名を入力してください', 'err'); return; }
@@ -1059,8 +1075,10 @@
 
     groupState.roomId = roomId;
     groupState.myName = name;
-    localStorage.setItem('carnav_member_name', name);
-    localStorage.setItem('carnav_room_id', roomId);
+    try{
+      localStorage.setItem('carnav_member_name', name);
+      localStorage.setItem('carnav_room_id', roomId);
+    }catch(err){ /* 保存できなくても参加処理自体は続行する */ }
 
     const myRef = groupState.fb.ref(`groups/${roomId}/members/${groupState.myId}`);
     myRef.onDisconnect().remove();
@@ -1175,6 +1193,15 @@
     renderMemberMarkers();
   }
 
+  // 自分の現在位置(緯度経度)を、ナビ中かどうかに関わらず取得するためのヘルパー。
+  // 以前は state.currentMarker (ナビ中のみ存在) だけを見ていたため、ナビをせず
+  // グループの位置共有だけをしている時は仲間との距離が常に空欄になっていた。
+  function getMyLatLng(){
+    if(state.currentMarker) return state.currentMarker.getLatLng();
+    if(groupState.myMarker) return groupState.myMarker.getLatLng();
+    return null;
+  }
+
   function renderMemberList(){
     const ids = Object.keys(groupState.members).filter(id => id !== groupState.myId);
     memberCountBadge.hidden = ids.length === 0;
@@ -1189,8 +1216,8 @@
       const row = document.createElement('div');
       row.className = 'member-row';
       let distText = '';
-      if(m.lat != null && m.lng != null && state.currentMarker){
-        const me = state.currentMarker.getLatLng();
+      const me = getMyLatLng();
+      if(m.lat != null && m.lng != null && me){
         const distKm = turf.distance(turf.point([me.lng, me.lat]), turf.point([m.lng, m.lat]), { units: 'kilometers' });
         distText = distKm >= 1 ? distKm.toFixed(1) + ' km' : Math.round(distKm * 1000) + ' m';
       }
