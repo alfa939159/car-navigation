@@ -946,6 +946,19 @@
   makeTapToSelect(configTransferUrlText);
   renderIconPickers();
 
+  // アプリを開いた直後に一度だけGPSを取得し、自分のアイコンを中心に地図を表示する。
+  // グループに参加していなくても、開いた時点で現在地がわかるようにするため
+  // (以前はナビ開始/グループ参加の時だけGPSを使う仕様だった)。
+  function requestInitialLocation(){
+    if(!('geolocation' in navigator)) return;
+    navigator.geolocation.getCurrentPosition(
+      (pos) => { updateMyGroupMarker(pos.coords.latitude, pos.coords.longitude); },
+      (err) => { setStatus('📍 ' + geoErrorMessage(err), 'err'); },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+    );
+  }
+  requestInitialLocation();
+
   // ---------------- 招待QRコード ----------------
   function buildInviteUrl(roomId){
     const url = new URL(window.location.href);
@@ -1171,7 +1184,7 @@
   // 重ねて表示しないようにする。
   function selfMarkerHtml(){
     const icon = (groupState.myIcon && CAR_ICONS.indexOf(groupState.myIcon) !== -1) ? groupState.myIcon : CAR_ICONS[0];
-    const name = (groupState.myName || '自分') + '(自分)';
+    const name = groupState.myName ? (groupState.myName + '(自分)') : '自分';
     return {
       html: `<div class="member-marker-wrap"><div class="member-marker" style="background:#2f80ff;border-color:#fff;">${icon}</div><div class="member-marker-label">${escapeHtml(name)}</div></div>`,
       key: icon + '|' + name
