@@ -335,15 +335,16 @@
 
   const mapEl = document.getElementById('map');
   const map = L.map('map', { zoomControl: false, attributionControl: false }).setView(DEFAULT_CENTER, 15);
-  // OpenStreetMap本体の無料タイルサーバー(tile.openstreetmap.org)は、あくまで
-  // 「個人の軽い試用」向けの善意運営サーバーで、アプリへの組み込みなど継続的な利用は
-  // 利用規約(tile usage policy)違反として自動的にブロックされてしまう
-  // (実際に発生した "Access blocked" 表示はこれが原因)。
-  // 代わりにCARTOが無料公開しているベースマップタイルを使う(地図データ自体はOSM由来で見た目もほぼ同じ)。
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-    subdomains: 'abcd',
-    maxZoom: 20,
-    attribution: '&copy; OpenStreetMap contributors &copy; CARTO'
+  // OpenStreetMap本体の無料タイルサーバー(tile.openstreetmap.org)は「個人の軽い試用」向けの
+  // 善意運営サーバーで、アプリへの組み込みなど継続的な利用は利用規約違反としてブロックされた
+  // ("Access blocked" 表示)。次に使ったCARTOの無料タイルも、その後アカウント登録(APIキー)が
+  // 必須になり、登録なしでは「API KEY REQUIRED」の透かしが地図全面に表示されるようになった。
+  // どちらも無料で使い続けられる保証がないため、登録不要で今も匿名利用できるEsri社の
+  // 地図タイル(World Street Map)に切り替える。Esriの地図タイルは並び順が {z}/{y}/{x} と
+  // 一般的なもの({z}/{x}/{y})と逆になっている点に注意。
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors, Esri, HERE, Garmin, FAO, NOAA, USGS'
   }).addTo(map);
 
   const destInput = document.getElementById('destInput');
