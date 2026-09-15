@@ -213,6 +213,7 @@
 
   <div id="mapControls">
     <button id="orientBtn" class="ctrl-btn">⬆ 進行方向</button>
+    <button id="myLocationBtn" class="ctrl-btn" title="自分の位置に戻る">📍</button>
     <button id="recenterBtn" class="ctrl-btn" hidden title="現在地に戻る">🎯</button>
     <button id="groupBtn" class="ctrl-btn" title="グループ">👥<span class="badge" id="memberCountBadge" hidden>0</span></button>
     <button id="transferConfigBtn" class="ctrl-btn" hidden title="設定をスマホへ転送">📲</button>
@@ -358,6 +359,7 @@
   const etaValue = document.getElementById('etaValue');
   const etaMinValue = document.getElementById('etaMinValue');
   const orientBtn = document.getElementById('orientBtn');
+  const myLocationBtn = document.getElementById('myLocationBtn');
   const recenterBtn = document.getElementById('recenterBtn');
 
   function setStatus(msg, kind){
@@ -577,6 +579,37 @@
       const ll = state.currentMarker.getLatLng();
       recenterMap(ll.lat, ll.lng);
     }
+  });
+
+  // ナビ中/グループ参加中/どちらでもない時のいずれでも、ワンタップで自分の位置に地図を戻せるボタン。
+  // すでに位置がわかっていればそれを使い、わからなければその場でGPSを取得する。
+  myLocationBtn.addEventListener('click', () => {
+    if(state.navigating && state.currentMarker){
+      state.followMode = true;
+      recenterBtn.hidden = true;
+      const ll = state.currentMarker.getLatLng();
+      recenterMap(ll.lat, ll.lng);
+      return;
+    }
+    if(groupState.myMarker){
+      const ll = groupState.myMarker.getLatLng();
+      map.setView([ll.lat, ll.lng], Math.max(map.getZoom(), 16), { animate: true });
+      return;
+    }
+    if(!('geolocation' in navigator)){
+      setStatus('この端末・ブラウザは位置情報(GPS)に対応していません', 'err');
+      return;
+    }
+    setStatus('現在地を取得しています…');
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        updateMyGroupMarker(pos.coords.latitude, pos.coords.longitude);
+        map.setView([pos.coords.latitude, pos.coords.longitude], Math.max(map.getZoom(), 16), { animate: true });
+        setStatus('現在地に移動しました', 'ok');
+      },
+      (err) => { setStatus('📍 ' + geoErrorMessage(err), 'err'); },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+    );
   });
 
   orientBtn.addEventListener('click', () => {
