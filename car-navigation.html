@@ -214,7 +214,6 @@
   <div id="mapControls">
     <button id="orientBtn" class="ctrl-btn">⬆ 進行方向</button>
     <button id="myLocationBtn" class="ctrl-btn" title="自分の位置に戻る">📍</button>
-    <button id="recenterBtn" class="ctrl-btn" hidden title="現在地に戻る">🎯</button>
     <button id="groupBtn" class="ctrl-btn" title="グループ">👥<span class="badge" id="memberCountBadge" hidden>0</span></button>
     <button id="transferConfigBtn" class="ctrl-btn" hidden title="設定をスマホへ転送">📲</button>
   </div>
@@ -360,7 +359,6 @@
   const etaMinValue = document.getElementById('etaMinValue');
   const orientBtn = document.getElementById('orientBtn');
   const myLocationBtn = document.getElementById('myLocationBtn');
-  const recenterBtn = document.getElementById('recenterBtn');
 
   function setStatus(msg, kind){
     statusLine.textContent = msg || '';
@@ -512,7 +510,6 @@
     startNavBtn.hidden = false;
     startNavBtn.disabled = false;
     stopNavBtn.hidden = true;
-    recenterBtn.hidden = true;
     setMapRotation(0);
     let lastKnownLatLng = null;
     if(state.currentMarker){ lastKnownLatLng = state.currentMarker.getLatLng(); map.removeLayer(state.currentMarker); state.currentMarker = null; }
@@ -569,24 +566,16 @@
   map.on('dragstart', () => {
     if(state.navigating && state.followMode){
       state.followMode = false;
-      recenterBtn.hidden = false;
-    }
-  });
-  recenterBtn.addEventListener('click', () => {
-    state.followMode = true;
-    recenterBtn.hidden = true;
-    if(state.currentMarker){
-      const ll = state.currentMarker.getLatLng();
-      recenterMap(ll.lat, ll.lng);
     }
   });
 
-  // ナビ中/グループ参加中/どちらでもない時のいずれでも、ワンタップで自分の位置に地図を戻せるボタン。
+  // ナビ中に地図をドラッグして追従(followMode)が外れた時も、ナビをしていない時も、
+  // グループ参加中でも――どの状態でも同じ📍ボタン1つだけで自分の位置に地図を戻せるようにする
+  // (以前は🎯ボタンと📍ボタンの2つが同じ目的で存在していて紛らわしかったため、1つに統一した)。
   // すでに位置がわかっていればそれを使い、わからなければその場でGPSを取得する。
   myLocationBtn.addEventListener('click', () => {
     if(state.navigating && state.currentMarker){
       state.followMode = true;
-      recenterBtn.hidden = true;
       const ll = state.currentMarker.getLatLng();
       recenterMap(ll.lat, ll.lng);
       return;
