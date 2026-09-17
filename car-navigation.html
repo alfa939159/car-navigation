@@ -81,16 +81,6 @@
   #startNavBtn:disabled { opacity:.5; cursor:default; }
   #stopNavBtn { background:#e05555; color:#2a0a0a; }
 
-  /* --- Current-location marker (rotatable inner arrow, counter-rotated independently of the map) --- */
-  .nav-marker-wrap { display:flex; align-items:center; justify-content:center; }
-  .nav-arrow {
-    width:0; height:0;
-    border-left:10px solid transparent; border-right:10px solid transparent;
-    border-bottom:22px solid #2f80ff;
-    filter: drop-shadow(0 0 3px rgba(47,128,255,0.9));
-    transform: rotate(0deg);
-  }
-
   .leaflet-control-attribution { display:none !important; }
   #attrib {
     position:absolute; left:8px; bottom:2px; z-index:480; font-size:10px; color:#5a6478;
@@ -164,6 +154,8 @@
 
   .member-marker-wrap { display:flex; flex-direction:column; align-items:center; gap:3px; }
   .member-marker { width:32px; height:32px; border-radius:50%; border:2px solid #0b1220; display:flex; align-items:center; justify-content:center; font-size:17px; box-shadow:0 2px 8px rgba(0,0,0,0.4); }
+  /* ナビ中の自分のアイコンだけを回転させ、名前ラベルは常に読める向きのままにするための入れ物 */
+  .nav-icon-rotate { display:flex; align-items:center; justify-content:center; }
   .member-marker-label {
     font-size:10px; font-weight:700; color:#eef2f8; background:rgba(11,18,32,0.8);
     padding:1px 6px; border-radius:6px; white-space:nowrap; max-width:80px; overflow:hidden; text-overflow:ellipsis;
@@ -543,13 +535,30 @@
     setStatus(geoErrorMessage(err), 'err');
   }
 
+  // ナビ中の自分のマーカーは、仲間のマーカーと同じ「アイコン+名前ラベル」の見た目にして、
+  // 進行方向にはアイコン部分(.nav-icon-rotate)だけを回転させる(ラベルは常に読める向きのまま)。
+  // グループに参加していない場合は既定のアイコン・「自分」という名前になる。
+  function navMarkerHtml(icon, name){
+    return `<div class="member-marker-wrap"><div class="nav-icon-rotate"><div class="member-marker" style="background:#2f80ff;border-color:#fff;">${icon}</div></div><div class="member-marker-label">${escapeHtml(name)}</div></div>`;
+  }
   function updateCurrentMarker(lat, lng, accuracy){
     const ll = [lat, lng];
+    const { icon, name } = selfIconAndName();
+    const key = icon + '|' + name;
+    // className: 'nav-current-marker' はLeafletが作る外側の要素に付くクラスで、他の仲間マーカー
+    // (見た目は同じ .member-marker-wrap を使う)と区別して、この「自分のナビ中マーカー」だけを
+    // 特定するための目印(テストや今後の機能追加で使う)。
     if(!state.currentMarker){
-      const icon = L.divIcon({ className: 'nav-marker-wrap', html: '<div class="nav-arrow"></div>', iconSize: [28,28], iconAnchor:[14,14] });
-      state.currentMarker = L.marker(ll, { icon: icon, zIndexOffset: 1000 }).addTo(map);
+      const divIcon = L.divIcon({ className: 'nav-current-marker', html: navMarkerHtml(icon, name), iconSize: [80, 50], iconAnchor: [40, 16] });
+      state.currentMarker = L.marker(ll, { icon: divIcon, zIndexOffset: 1000 }).addTo(map);
+      state.currentMarker._carnavContentKey = key;
     }else{
       state.currentMarker.setLatLng(ll);
+      if(state.currentMarker._carnavContentKey !== key){
+        state.currentMarker.setIcon(L.divIcon({ className: 'nav-current-marker', html: navMarkerHtml(icon, name), iconSize: [80, 50], iconAnchor: [40, 16] }));
+        state.currentMarker._carnavContentKey = key;
+        applyOrientation(state.lastHeading); // setIcon()でDOMが作り直されるため、回転を再適用する
+      }
     }
     if(accuracy){
       if(!state.accuracyCircle){
@@ -617,8 +626,12 @@
     if(!state.currentMarker) return;
     const el = state.currentMarker.getElement();
     if(!el) return;
-    const arrow = el.querySelector('.nav-arrow');
-    if(arrow) arrow.style.transform = `rotate(${deg}deg)`;
+    const iconRotate = el.querySelector('.nav-icon-rotate');
+    if(iconRotate) iconRotate.style.transform = `rotate(${deg}deg)`;
+    // 進行方向見出しモードでは地図全体も回転しているため、名前ラベルはその分だけ逆回転させて
+    // 常に水平に読めるようにする(北固定モードでは地図が回らないので、ラベルも回転させない)。
+    const label = el.querySelector('.member-marker-label');
+    if(label) label.style.transform = state.headingUp ? `rotate(${deg}deg)` : 'none';
   }
   function applyOrientation(heading){
     if(state.headingUp){
@@ -1239,9 +1252,15 @@
   // 自分自身の位置に、選んだアイコン+名前のマーカーを表示する(仲間のマーカーと同じ見た目)。
   // ナビ中は進行方向を示す矢印マーカー(state.currentMarker)がすでに自分を表しているため、
   // 重ねて表示しないようにする。
-  function selfMarkerHtml(){
+  // 自分のアイコン・表示名(グループ未参加なら既定値)。ナビ中/ナビ外どちらの自分マーカーも
+  // この同じ組み合わせを使うことで、常に同じ見た目になるようにする。
+  function selfIconAndName(){
     const icon = (groupState.myIcon && CAR_ICONS.indexOf(groupState.myIcon) !== -1) ? groupState.myIcon : CAR_ICONS[0];
     const name = groupState.myName ? (groupState.myName + '(自分)') : '自分';
+    return { icon, name };
+  }
+  function selfMarkerHtml(){
+    const { icon, name } = selfIconAndName();
     return {
       html: `<div class="member-marker-wrap"><div class="member-marker" style="background:#2f80ff;border-color:#fff;">${icon}</div><div class="member-marker-label">${escapeHtml(name)}</div></div>`,
       key: icon + '|' + name
