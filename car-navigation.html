@@ -62,6 +62,7 @@
     box-shadow:0 4px 12px rgba(0,0,0,0.35); border:1px solid rgba(255,255,255,0.08);
   }
   #orientBtn { width:auto; padding:0 12px; font-size:13px; font-weight:600; white-space:nowrap; }
+  #clearViaBtn { width:auto; padding:0 12px; font-size:13px; font-weight:600; white-space:nowrap; background:rgba(245,166,35,0.18); border-color:#f5a623; color:#f5c268; }
 
   /* --- Bottom panel --- */
   #bottomPanel { bottom:12px; padding:14px 16px; }
@@ -206,6 +207,7 @@
   <div id="mapControls">
     <button id="orientBtn" class="ctrl-btn">⬆ 進行方向</button>
     <button id="myLocationBtn" class="ctrl-btn" title="自分の位置に戻る">📍</button>
+    <button id="clearViaBtn" class="ctrl-btn" hidden title="経由地点をやめて元のルートに戻す">↩ 経由地点解除</button>
     <button id="groupBtn" class="ctrl-btn" title="グループ">👥<span class="badge" id="memberCountBadge" hidden>0</span></button>
     <button id="transferConfigBtn" class="ctrl-btn" hidden title="設定をスマホへ転送">📲</button>
   </div>
@@ -357,6 +359,7 @@
   const etaMinValue = document.getElementById('etaMinValue');
   const orientBtn = document.getElementById('orientBtn');
   const myLocationBtn = document.getElementById('myLocationBtn');
+  const clearViaBtn = document.getElementById('clearViaBtn');
 
   function setStatus(msg, kind){
     statusLine.textContent = msg || '';
@@ -489,8 +492,12 @@
     map.dragging.enable();
     if(state.viaDragMarker){ map.removeLayer(state.viaDragMarker); state.viaDragMarker = null; }
   }
+  function updateClearViaBtnVisibility(){
+    clearViaBtn.hidden = !state.viaLatLng;
+  }
   function renderViaMarker(){
     if(state.viaMarker){ map.removeLayer(state.viaMarker); state.viaMarker = null; }
+    updateClearViaBtnVisibility();
     if(!state.viaLatLng) return;
     state.viaMarker = L.circleMarker([state.viaLatLng.lat, state.viaLatLng.lng], {
       radius: 8, color:'#fff', weight:2, fillColor:'#f5a623', fillOpacity:1
@@ -500,8 +507,7 @@
       const btn = document.getElementById('removeViaBtn');
       if(btn) btn.addEventListener('click', () => {
         state.viaMarker.closePopup();
-        state.viaLatLng = null;
-        recomputeRouteWithVia();
+        clearViaPoint();
       });
     });
   }
@@ -524,6 +530,20 @@
       state.rerouting = false;
     }
   }
+  // 経由地点をやめて元の(現在地→目的地の直接の)ルートに戻す。ナビ中でライブに位置が
+  // わかっている場合はその場でルートを引き直し、そうでない場合は指定だけを取り消す。
+  function clearViaPoint(){
+    if(!state.viaLatLng) return;
+    if(state.navigating && state.currentMarker){
+      state.viaLatLng = null;
+      recomputeRouteWithVia();
+    }else{
+      state.viaLatLng = null;
+      if(state.viaMarker){ map.removeLayer(state.viaMarker); state.viaMarker = null; }
+      updateClearViaBtnVisibility();
+    }
+  }
+  clearViaBtn.addEventListener('click', clearViaPoint);
   // 経由地点に十分近づいたら、以降の自動再ルート検索がそこを無理に通ろうとして
   // 逆走するような案内にならないよう、経由地点の指定を自動的に解除する。
   function maybeClearReachedVia(lat, lng){
@@ -532,6 +552,7 @@
     if(distMeters < 60){
       state.viaLatLng = null;
       if(state.viaMarker){ map.removeLayer(state.viaMarker); state.viaMarker = null; }
+      updateClearViaBtnVisibility();
     }
   }
 
@@ -546,6 +567,7 @@
     if(state.routeLineHit){ map.removeLayer(state.routeLineHit); state.routeLineHit = null; }
     if(state.viaMarker){ map.removeLayer(state.viaMarker); state.viaMarker = null; }
     state.viaLatLng = null;
+    updateClearViaBtnVisibility();
     state.destLatLng = null;
     state.destLabel = '';
     destInput.value = '';
