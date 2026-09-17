@@ -207,7 +207,7 @@
   <div id="mapControls">
     <button id="orientBtn" class="ctrl-btn">⬆ 進行方向</button>
     <button id="myLocationBtn" class="ctrl-btn" title="自分の位置に戻る">📍</button>
-    <button id="clearViaBtn" class="ctrl-btn" hidden title="経由地点をやめて元のルートに戻す">↩ 経由地点解除</button>
+    <button id="clearViaBtn" class="ctrl-btn" hidden title="直前に追加した経由地点を1つ取り消す">↩ 戻る</button>
     <button id="groupBtn" class="ctrl-btn" title="グループ">👥<span class="badge" id="memberCountBadge" hidden>0</span></button>
     <button id="transferConfigBtn" class="ctrl-btn" hidden title="設定をスマホへ転送">📲</button>
   </div>
@@ -316,8 +316,8 @@
     routeLineHit: null,
     routeGeoJSON: null,
     routeLengthKm: 0,
-    viaLatLng: null,       // ルート線をドラッグして指定した経由地点(あれば)
-    viaMarker: null,       // 確定した経由地点のマーカー
+    viaPoints: [],         // ドラッグで追加した経由地点の配列(先頭が最初に通る=最も古い経由地点)
+    viaMarkers: [],        // 各経由地点に対応するマーカー(viaPointsと同じ並び順)
     viaDragMarker: null,   // ドラッグ中だけ表示する追従マーカー
     routeDragging: false,
     currentMarker: null,
@@ -406,11 +406,11 @@
   }
 
   // ---------------- Route fetching / rendering ----------------
-  // viaLatLng を指定すると、出発地→経由地点→目的地の順で通る3点(以上)のルートをOSRMに問い合わせる
-  // (指でルート線をつまんでずらす「経由地点」機能で使う)。
-  async function fetchRoute(fromLatLng, toLatLng, viaLatLng){
+  // viaLatLngs(配列)を指定すると、出発地→経由地点1→経由地点2→…→目的地の順で通る
+  // ルートをOSRMに問い合わせる(指でルート線をつまんでずらす「経由地点」機能で使う)。
+  async function fetchRoute(fromLatLng, toLatLng, viaLatLngs){
     const points = [fromLatLng];
-    if(viaLatLng) points.push(viaLatLng);
+    if(viaLatLngs && viaLatLngs.length) points.push(...viaLatLngs);
     points.push(toLatLng);
     const coordStr = points.map(p => `${p.lng},${p.lat}`).join(';');
     const url = `${ROUTE_BASE_CAR}${coordStr}?overview=full&geometries=geojson`;
@@ -431,34 +431,47 @@
     state.routeLineOutline = L.polyline(latlngs, { color:'#0b1220', weight:9, opacity:.55, lineCap:'round', lineJoin:'round' }).addTo(map);
     state.routeLine = L.polyline(latlngs, { color:'#2f80ff', weight:5, opacity:.95, lineCap:'round', lineJoin:'round' }).addTo(map);
     // ルート線本体は細くて指でつかみにくいため、見た目には出さない太い透明な線を上に重ねて、
-    // それをドラッグの当たり判定に使う(スマホでもつかみやすくするため)。
-    state.routeLineHit = L.polyline(latlngs, { color:'#000', weight:26, opacity:0 }).addTo(map);
+    // それをドラッグの当たり判定に使う(スマホの指でも掴みやすいよう、実際の線よりだいぶ太くする)。
+    state.routeLineHit = L.polyline(latlngs, { color:'#000', weight:40, opacity:0 }).addTo(map);
     attachRouteDragHandlers(state.routeLineHit);
     state.routeGeoJSON = turf.lineString(route.geometry.coordinates);
     state.routeLengthKm = turf.length(state.routeGeoJSON, { units: 'kilometers' });
   }
 
   // ---------------- ルート線をドラッグして経由地点を指定する ----------------
+  // Pointer Eventsだけに頼ると、実機のブラウザによってはタッチ操作を正しく拾えず
+  // (地図側の通常のパン操作に取られてしまい)ドラッグが一切反応しないことがあったため、
+  // 昔ながらのtouch/mouseイベントを両方明示的に登録する、より互換性の高い方式にする。
   function attachRouteDragHandlers(line){
     const el = line.getElement ? line.getElement() : null;
     if(!el) return;
     el.style.cursor = 'grab';
     el.style.touchAction = 'none'; // ブラウザ標準のスクロール/ズームジェスチャーと衝突しないようにする
-    el.addEventListener('pointerdown', onRouteLinePointerDown);
+    el.addEventListener('touchstart', onRouteLineDragStart, { passive: false });
+    el.addEventListener('mousedown', onRouteLineDragStart);
   }
   function clientPointToLatLng(clientX, clientY){
     const rect = map.getContainer().getBoundingClientRect();
     return map.containerPointToLatLng(L.point(clientX - rect.left, clientY - rect.top));
   }
-  function onRouteLinePointerDown(e){
-    if(!state.navigating || state.rerouting) return;
+  // タッチ/マウスどちらのイベントからも、指(またはカーソル)の現在位置(clientX/clientY)を取り出す
+  function eventClientPoint(e){
+    if(e.touches && e.touches.length) return { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    if(e.changedTouches && e.changedTouches.length) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+    return { x: e.clientX, y: e.clientY };
+  }
+  function onRouteLineDragStart(e){
+    if(!state.navigating || state.rerouting || state.routeDragging) return;
     e.preventDefault();
     state.routeDragging = true;
     map.dragging.disable(); // ドラッグ中は地図自体がパンしないようにする
-    try{ e.target.setPointerCapture(e.pointerId); }catch(err){ /* ignore */ }
-    updateViaDragPreview(e.clientX, e.clientY);
-    document.addEventListener('pointermove', onRouteLinePointerMove);
-    document.addEventListener('pointerup', onRouteLinePointerUp);
+    const p = eventClientPoint(e);
+    updateViaDragPreview(p.x, p.y);
+    document.addEventListener('touchmove', onRouteLineDragMove, { passive: false });
+    document.addEventListener('touchend', onRouteLineDragEnd);
+    document.addEventListener('touchcancel', onRouteLineDragCancel);
+    document.addEventListener('mousemove', onRouteLineDragMove);
+    document.addEventListener('mouseup', onRouteLineDragEnd);
   }
   function updateViaDragPreview(clientX, clientY){
     const ll = clientPointToLatLng(clientX, clientY);
@@ -468,91 +481,129 @@
       state.viaDragMarker.setLatLng(ll);
     }
   }
-  function onRouteLinePointerMove(e){
+  function onRouteLineDragMove(e){
     if(!state.routeDragging) return;
-    updateViaDragPreview(e.clientX, e.clientY);
+    e.preventDefault();
+    const p = eventClientPoint(e);
+    updateViaDragPreview(p.x, p.y);
   }
-  async function onRouteLinePointerUp(e){
+  function detachRouteLineDragListeners(){
+    document.removeEventListener('touchmove', onRouteLineDragMove);
+    document.removeEventListener('touchend', onRouteLineDragEnd);
+    document.removeEventListener('touchcancel', onRouteLineDragCancel);
+    document.removeEventListener('mousemove', onRouteLineDragMove);
+    document.removeEventListener('mouseup', onRouteLineDragEnd);
+  }
+  async function onRouteLineDragEnd(e){
     if(!state.routeDragging) return;
     state.routeDragging = false;
-    document.removeEventListener('pointermove', onRouteLinePointerMove);
-    document.removeEventListener('pointerup', onRouteLinePointerUp);
+    detachRouteLineDragListeners();
     map.dragging.enable();
-    const ll = clientPointToLatLng(e.clientX, e.clientY);
+    const p = eventClientPoint(e);
+    const ll = clientPointToLatLng(p.x, p.y);
     if(state.viaDragMarker){ map.removeLayer(state.viaDragMarker); state.viaDragMarker = null; }
-    state.viaLatLng = { lat: ll.lat, lng: ll.lng };
-    await recomputeRouteWithVia();
+    // ドラッグするたびに経由地点を1つ「追加」する(既存の経由地点は消さない)。これにより
+    // 何度もドラッグして経路を細かく調整でき、「戻る」ボタンで最後に追加した1つずつ取り消せる。
+    state.viaPoints.push({ lat: ll.lat, lng: ll.lng });
+    await recomputeRouteWithVias();
+  }
+  // 指を離さずに画面外へ持って行かれた等でtouchcancelになった場合は、ドラッグ自体を取り消す
+  // (中途半端な位置で経由地点が確定してしまわないようにする)。
+  function onRouteLineDragCancel(){
+    if(!state.routeDragging) return;
+    state.routeDragging = false;
+    detachRouteLineDragListeners();
+    map.dragging.enable();
+    if(state.viaDragMarker){ map.removeLayer(state.viaDragMarker); state.viaDragMarker = null; }
   }
   // ドラッグ操作の途中で目的地クリア等が起きた場合に、後始末を確実に行う
   function cancelRouteDragIfActive(){
     if(!state.routeDragging) return;
     state.routeDragging = false;
-    document.removeEventListener('pointermove', onRouteLinePointerMove);
-    document.removeEventListener('pointerup', onRouteLinePointerUp);
+    detachRouteLineDragListeners();
     map.dragging.enable();
     if(state.viaDragMarker){ map.removeLayer(state.viaDragMarker); state.viaDragMarker = null; }
   }
   function updateClearViaBtnVisibility(){
-    clearViaBtn.hidden = !state.viaLatLng;
+    clearViaBtn.hidden = state.viaPoints.length === 0;
   }
-  function renderViaMarker(){
-    if(state.viaMarker){ map.removeLayer(state.viaMarker); state.viaMarker = null; }
+  // 経由地点(複数)をすべて描き直す。番号付きの小さなマーカーにして、追加した順序が
+  // わかるようにする(①が最初に通る経由地点)。各マーカーのポップアップからその1つだけを
+  // 個別に削除することもできる。
+  function renderViaMarkers(){
+    state.viaMarkers.forEach(m => map.removeLayer(m));
+    state.viaMarkers = [];
     updateClearViaBtnVisibility();
-    if(!state.viaLatLng) return;
-    state.viaMarker = L.circleMarker([state.viaLatLng.lat, state.viaLatLng.lng], {
-      radius: 8, color:'#fff', weight:2, fillColor:'#f5a623', fillOpacity:1
-    }).addTo(map);
-    state.viaMarker.bindPopup('<div style="font-size:13px;">経由地点<br><button id="removeViaBtn" style="margin-top:6px;">✕ 経由地点を削除</button></div>');
-    state.viaMarker.on('popupopen', () => {
-      const btn = document.getElementById('removeViaBtn');
-      if(btn) btn.addEventListener('click', () => {
-        state.viaMarker.closePopup();
-        clearViaPoint();
+    state.viaPoints.forEach((v, idx) => {
+      const icon = L.divIcon({
+        className: 'via-marker-icon',
+        html: `<div style="width:22px;height:22px;border-radius:50%;background:#f5a623;border:2px solid #fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#3a2508;box-shadow:0 2px 6px rgba(0,0,0,.4);">${idx + 1}</div>`,
+        iconSize: [22, 22], iconAnchor: [11, 11]
       });
+      const marker = L.marker([v.lat, v.lng], { icon }).addTo(map);
+      marker.bindPopup(`<div style="font-size:13px;">経由地点 ${idx + 1}<br><button class="removeViaBtn" style="margin-top:6px;">✕ この経由地点を削除</button></div>`);
+      marker.on('popupopen', () => {
+        const popupEl = marker.getPopup().getElement();
+        const btn = popupEl ? popupEl.querySelector('.removeViaBtn') : null;
+        if(btn) btn.addEventListener('click', () => {
+          marker.closePopup();
+          removeViaPointAt(idx);
+        });
+      });
+      state.viaMarkers.push(marker);
     });
   }
-  // 経由地点を反映して、現在地→経由地点→目的地でルートを引き直す
-  async function recomputeRouteWithVia(){
+  // 経由地点(複数)を反映して、現在地→経由地点1→経由地点2→…→目的地でルートを引き直す
+  async function recomputeRouteWithVias(){
     if(!state.currentMarker || !state.destLatLng || state.rerouting) return;
     const cur = state.currentMarker.getLatLng();
     state.rerouting = true;
     setStatus('経由地点を反映してルートを再検索しています…');
     try{
-      const route = await fetchRoute({ lat: cur.lat, lng: cur.lng }, state.destLatLng, state.viaLatLng);
+      const route = await fetchRoute({ lat: cur.lat, lng: cur.lng }, state.destLatLng, state.viaPoints);
       renderRoute(route);
-      renderViaMarker();
+      renderViaMarkers();
       state.offRouteStreak = 0;
       state.lastRerouteAt = Date.now();
-      setStatus(state.viaLatLng ? '✅ 経由地点を反映しました' : '✅ 経由地点を削除しました', 'ok');
+      setStatus(state.viaPoints.length ? '✅ 経由地点を反映しました' : '✅ 経由地点をなくしました', 'ok');
     }catch(err){
       setStatus(err.message || 'ルートの再検索に失敗しました', 'err');
     }finally{
       state.rerouting = false;
     }
   }
-  // 経由地点をやめて元の(現在地→目的地の直接の)ルートに戻す。ナビ中でライブに位置が
-  // わかっている場合はその場でルートを引き直し、そうでない場合は指定だけを取り消す。
-  function clearViaPoint(){
-    if(!state.viaLatLng) return;
+  // 経由地点を1つだけ、指定した位置(配列の途中でもよい)から取り消す(マーカーのポップアップから使う)
+  function removeViaPointAt(idx){
+    if(idx < 0 || idx >= state.viaPoints.length) return;
+    state.viaPoints.splice(idx, 1);
     if(state.navigating && state.currentMarker){
-      state.viaLatLng = null;
-      recomputeRouteWithVia();
+      recomputeRouteWithVias();
     }else{
-      state.viaLatLng = null;
-      if(state.viaMarker){ map.removeLayer(state.viaMarker); state.viaMarker = null; }
-      updateClearViaBtnVisibility();
+      renderViaMarkers();
     }
   }
-  clearViaBtn.addEventListener('click', clearViaPoint);
-  // 経由地点に十分近づいたら、以降の自動再ルート検索がそこを無理に通ろうとして
-  // 逆走するような案内にならないよう、経由地点の指定を自動的に解除する。
+  // 「戻る」ボタン: 最後に追加した経由地点を1つだけ取り消す(複数回ドラッグしていれば、
+  // 押すたびに1手ずつ元に戻る)。ナビ中でライブに位置がわかる場合はその場でルートを
+  // 引き直し、そうでない場合は表示だけを更新する。
+  function undoLastViaPoint(){
+    if(!state.viaPoints.length) return;
+    state.viaPoints.pop();
+    if(state.navigating && state.currentMarker){
+      recomputeRouteWithVias();
+    }else{
+      renderViaMarkers();
+    }
+  }
+  clearViaBtn.addEventListener('click', undoLastViaPoint);
+  // 経由地点(先頭=次に通るもの)に十分近づいたら、以降の自動再ルート検索がそこを無理に
+  // 通ろうとして逆走するような案内にならないよう、その経由地点の指定を自動的に解除する。
   function maybeClearReachedVia(lat, lng){
-    if(!state.viaLatLng) return;
-    const distMeters = map.distance([lat, lng], [state.viaLatLng.lat, state.viaLatLng.lng]);
+    if(!state.viaPoints.length) return;
+    const next = state.viaPoints[0];
+    const distMeters = map.distance([lat, lng], [next.lat, next.lng]);
     if(distMeters < 60){
-      state.viaLatLng = null;
-      if(state.viaMarker){ map.removeLayer(state.viaMarker); state.viaMarker = null; }
-      updateClearViaBtnVisibility();
+      state.viaPoints.shift();
+      renderViaMarkers();
     }
   }
 
@@ -565,8 +616,9 @@
     if(state.routeLine){ map.removeLayer(state.routeLine); state.routeLine = null; }
     if(state.routeLineOutline){ map.removeLayer(state.routeLineOutline); state.routeLineOutline = null; }
     if(state.routeLineHit){ map.removeLayer(state.routeLineHit); state.routeLineHit = null; }
-    if(state.viaMarker){ map.removeLayer(state.viaMarker); state.viaMarker = null; }
-    state.viaLatLng = null;
+    state.viaMarkers.forEach(m => map.removeLayer(m));
+    state.viaMarkers = [];
+    state.viaPoints = [];
     updateClearViaBtnVisibility();
     state.destLatLng = null;
     state.destLabel = '';
@@ -828,9 +880,9 @@
     state.offRouteStreak = 0;
     setStatus('🔄 ルートを外れました。再ルート検索中…');
     try{
-      const route = await fetchRoute({ lat: lat, lng: lng }, state.destLatLng, state.viaLatLng);
+      const route = await fetchRoute({ lat: lat, lng: lng }, state.destLatLng, state.viaPoints);
       renderRoute(route);
-      renderViaMarker();
+      renderViaMarkers();
       state.lastRerouteAt = Date.now();
       setStatus('✅ 再ルートしました', 'ok');
     }catch(err){
