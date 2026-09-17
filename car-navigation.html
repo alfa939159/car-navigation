@@ -311,8 +311,13 @@
     destMarker: null,
     routeLine: null,
     routeLineOutline: null,
+    routeLineHit: null,
     routeGeoJSON: null,
     routeLengthKm: 0,
+    viaLatLng: null,       // ルート線をドラッグして指定した経由地点(あれば)
+    viaMarker: null,       // 確定した経由地点のマーカー
+    viaDragMarker: null,   // ドラッグ中だけ表示する追従マーカー
+    routeDragging: false,
     currentMarker: null,
     accuracyCircle: null,
     watchId: null,
@@ -398,8 +403,13 @@
   }
 
   // ---------------- Route fetching / rendering ----------------
-  async function fetchRoute(fromLatLng, toLatLng){
-    const coordStr = `${fromLatLng.lng},${fromLatLng.lat};${toLatLng.lng},${toLatLng.lat}`;
+  // viaLatLng を指定すると、出発地→経由地点→目的地の順で通る3点(以上)のルートをOSRMに問い合わせる
+  // (指でルート線をつまんでずらす「経由地点」機能で使う)。
+  async function fetchRoute(fromLatLng, toLatLng, viaLatLng){
+    const points = [fromLatLng];
+    if(viaLatLng) points.push(viaLatLng);
+    points.push(toLatLng);
+    const coordStr = points.map(p => `${p.lng},${p.lat}`).join(';');
     const url = `${ROUTE_BASE_CAR}${coordStr}?overview=full&geometries=geojson`;
     const res = await fetch(url);
     if(!res.ok) throw new Error('ルート検索サービスへの接続に失敗しました');
@@ -414,19 +424,128 @@
     const latlngs = route.geometry.coordinates.map(c => [c[1], c[0]]);
     if(state.routeLineOutline) map.removeLayer(state.routeLineOutline);
     if(state.routeLine) map.removeLayer(state.routeLine);
+    if(state.routeLineHit) map.removeLayer(state.routeLineHit);
     state.routeLineOutline = L.polyline(latlngs, { color:'#0b1220', weight:9, opacity:.55, lineCap:'round', lineJoin:'round' }).addTo(map);
     state.routeLine = L.polyline(latlngs, { color:'#2f80ff', weight:5, opacity:.95, lineCap:'round', lineJoin:'round' }).addTo(map);
+    // ルート線本体は細くて指でつかみにくいため、見た目には出さない太い透明な線を上に重ねて、
+    // それをドラッグの当たり判定に使う(スマホでもつかみやすくするため)。
+    state.routeLineHit = L.polyline(latlngs, { color:'#000', weight:26, opacity:0 }).addTo(map);
+    attachRouteDragHandlers(state.routeLineHit);
     state.routeGeoJSON = turf.lineString(route.geometry.coordinates);
     state.routeLengthKm = turf.length(state.routeGeoJSON, { units: 'kilometers' });
+  }
+
+  // ---------------- ルート線をドラッグして経由地点を指定する ----------------
+  function attachRouteDragHandlers(line){
+    const el = line.getElement ? line.getElement() : null;
+    if(!el) return;
+    el.style.cursor = 'grab';
+    el.style.touchAction = 'none'; // ブラウザ標準のスクロール/ズームジェスチャーと衝突しないようにする
+    el.addEventListener('pointerdown', onRouteLinePointerDown);
+  }
+  function clientPointToLatLng(clientX, clientY){
+    const rect = map.getContainer().getBoundingClientRect();
+    return map.containerPointToLatLng(L.point(clientX - rect.left, clientY - rect.top));
+  }
+  function onRouteLinePointerDown(e){
+    if(!state.navigating || state.rerouting) return;
+    e.preventDefault();
+    state.routeDragging = true;
+    map.dragging.disable(); // ドラッグ中は地図自体がパンしないようにする
+    try{ e.target.setPointerCapture(e.pointerId); }catch(err){ /* ignore */ }
+    updateViaDragPreview(e.clientX, e.clientY);
+    document.addEventListener('pointermove', onRouteLinePointerMove);
+    document.addEventListener('pointerup', onRouteLinePointerUp);
+  }
+  function updateViaDragPreview(clientX, clientY){
+    const ll = clientPointToLatLng(clientX, clientY);
+    if(!state.viaDragMarker){
+      state.viaDragMarker = L.circleMarker(ll, { radius: 9, color:'#fff', weight:3, fillColor:'#f5a623', fillOpacity:1 }).addTo(map);
+    }else{
+      state.viaDragMarker.setLatLng(ll);
+    }
+  }
+  function onRouteLinePointerMove(e){
+    if(!state.routeDragging) return;
+    updateViaDragPreview(e.clientX, e.clientY);
+  }
+  async function onRouteLinePointerUp(e){
+    if(!state.routeDragging) return;
+    state.routeDragging = false;
+    document.removeEventListener('pointermove', onRouteLinePointerMove);
+    document.removeEventListener('pointerup', onRouteLinePointerUp);
+    map.dragging.enable();
+    const ll = clientPointToLatLng(e.clientX, e.clientY);
+    if(state.viaDragMarker){ map.removeLayer(state.viaDragMarker); state.viaDragMarker = null; }
+    state.viaLatLng = { lat: ll.lat, lng: ll.lng };
+    await recomputeRouteWithVia();
+  }
+  // ドラッグ操作の途中で目的地クリア等が起きた場合に、後始末を確実に行う
+  function cancelRouteDragIfActive(){
+    if(!state.routeDragging) return;
+    state.routeDragging = false;
+    document.removeEventListener('pointermove', onRouteLinePointerMove);
+    document.removeEventListener('pointerup', onRouteLinePointerUp);
+    map.dragging.enable();
+    if(state.viaDragMarker){ map.removeLayer(state.viaDragMarker); state.viaDragMarker = null; }
+  }
+  function renderViaMarker(){
+    if(state.viaMarker){ map.removeLayer(state.viaMarker); state.viaMarker = null; }
+    if(!state.viaLatLng) return;
+    state.viaMarker = L.circleMarker([state.viaLatLng.lat, state.viaLatLng.lng], {
+      radius: 8, color:'#fff', weight:2, fillColor:'#f5a623', fillOpacity:1
+    }).addTo(map);
+    state.viaMarker.bindPopup('<div style="font-size:13px;">経由地点<br><button id="removeViaBtn" style="margin-top:6px;">✕ 経由地点を削除</button></div>');
+    state.viaMarker.on('popupopen', () => {
+      const btn = document.getElementById('removeViaBtn');
+      if(btn) btn.addEventListener('click', () => {
+        state.viaMarker.closePopup();
+        state.viaLatLng = null;
+        recomputeRouteWithVia();
+      });
+    });
+  }
+  // 経由地点を反映して、現在地→経由地点→目的地でルートを引き直す
+  async function recomputeRouteWithVia(){
+    if(!state.currentMarker || !state.destLatLng || state.rerouting) return;
+    const cur = state.currentMarker.getLatLng();
+    state.rerouting = true;
+    setStatus('経由地点を反映してルートを再検索しています…');
+    try{
+      const route = await fetchRoute({ lat: cur.lat, lng: cur.lng }, state.destLatLng, state.viaLatLng);
+      renderRoute(route);
+      renderViaMarker();
+      state.offRouteStreak = 0;
+      state.lastRerouteAt = Date.now();
+      setStatus(state.viaLatLng ? '✅ 経由地点を反映しました' : '✅ 経由地点を削除しました', 'ok');
+    }catch(err){
+      setStatus(err.message || 'ルートの再検索に失敗しました', 'err');
+    }finally{
+      state.rerouting = false;
+    }
+  }
+  // 経由地点に十分近づいたら、以降の自動再ルート検索がそこを無理に通ろうとして
+  // 逆走するような案内にならないよう、経由地点の指定を自動的に解除する。
+  function maybeClearReachedVia(lat, lng){
+    if(!state.viaLatLng) return;
+    const distMeters = map.distance([lat, lng], [state.viaLatLng.lat, state.viaLatLng.lng]);
+    if(distMeters < 60){
+      state.viaLatLng = null;
+      if(state.viaMarker){ map.removeLayer(state.viaMarker); state.viaMarker = null; }
+    }
   }
 
   // 検索窓の内容を消しても目的地パネル(「ナビ開始」ボタンなど)が出しっぱなしになっていたため、
   // ✕ボタンで目的地をクリアして最初の状態に戻せるようにする。ナビ中に押した場合はナビも終了する。
   function clearDestination(){
     if(state.navigating){ stopNavigation(); }
+    cancelRouteDragIfActive();
     if(state.destMarker){ map.removeLayer(state.destMarker); state.destMarker = null; }
     if(state.routeLine){ map.removeLayer(state.routeLine); state.routeLine = null; }
     if(state.routeLineOutline){ map.removeLayer(state.routeLineOutline); state.routeLineOutline = null; }
+    if(state.routeLineHit){ map.removeLayer(state.routeLineHit); state.routeLineHit = null; }
+    if(state.viaMarker){ map.removeLayer(state.viaMarker); state.viaMarker = null; }
+    state.viaLatLng = null;
     state.destLatLng = null;
     state.destLabel = '';
     destInput.value = '';
@@ -494,6 +613,7 @@
 
   function stopNavigation(message){
     if(state.watchId != null){ navigator.geolocation.clearWatch(state.watchId); state.watchId = null; }
+    cancelRouteDragIfActive();
     state.navigating = false;
     state.offRouteStreak = 0;
     state.rerouting = false;
@@ -527,6 +647,7 @@
     if(state.followMode) recenterMap(lat, lng);
     updateNavStats(lat, lng, speedMps); // 到着判定を含む。ここでstopNavigation()が呼ばれ、ナビが自動終了することがある
     if(!state.navigating) return; // 到着などでナビが終了した直後は、古いルート情報でのオフルート判定/再ルートを行わない
+    maybeClearReachedVia(lat, lng);
     checkOffRoute(lat, lng);
     maybeBroadcastLocation(lat, lng);
   }
@@ -685,8 +806,9 @@
     state.offRouteStreak = 0;
     setStatus('🔄 ルートを外れました。再ルート検索中…');
     try{
-      const route = await fetchRoute({ lat: lat, lng: lng }, state.destLatLng);
+      const route = await fetchRoute({ lat: lat, lng: lng }, state.destLatLng, state.viaLatLng);
       renderRoute(route);
+      renderViaMarker();
       state.lastRerouteAt = Date.now();
       setStatus('✅ 再ルートしました', 'ok');
     }catch(err){
